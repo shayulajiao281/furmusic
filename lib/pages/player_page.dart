@@ -13,10 +13,7 @@ class PlayerPage extends ConsumerStatefulWidget {
 }
 
 class _PlayerPageState extends ConsumerState<PlayerPage> {
-  /// 下拉位移
   double _dragOffset = 0.0;
-
-  /// 屏幕高度
   double _screenHeight = 0;
 
   String _fmt(Duration d) {
@@ -27,8 +24,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   IconData _modeIcon(PlayMode m) {
     switch (m) {
-      case PlayMode.sequential:
-        return CupertinoIcons.repeat;
       case PlayMode.repeatAll:
         return CupertinoIcons.repeat;
       case PlayMode.repeatOne:
@@ -40,8 +35,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   String _modeName(PlayMode m) {
     switch (m) {
-      case PlayMode.sequential:
-        return '顺序播放';
       case PlayMode.repeatAll:
         return '列表循环';
       case PlayMode.repeatOne:
@@ -51,7 +44,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     }
   }
 
-  /// 关闭页面
   void _close() {
     HapticFeedback.selectionClick();
     Navigator.pop(context);
@@ -75,14 +67,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     final live = allSongs.where((s) => s.id == song.id).toList();
     final isFav = live.isNotEmpty ? live.first.isFavorite : false;
 
-    // 拖动进度（0.0 到 1.0）
-    final progress = (_dragOffset / _screenHeight).clamp(0.0, 1.0);
-
     return CupertinoPageScaffold(
       child: GestureDetector(
-        // ★ 监听垂直拖动
         onVerticalDragUpdate: (details) {
-          // 只允许向下拖
           if (details.delta.dy > 0 || _dragOffset > 0) {
             setState(() {
               _dragOffset += details.delta.dy;
@@ -91,13 +78,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
           }
         },
         onVerticalDragEnd: (details) {
-          // 超过屏幕 1/4 或滑动速度够快 → 关闭
           if (_dragOffset > _screenHeight * 0.25 ||
-              details.primaryVelocity != null &&
-                  details.primaryVelocity! > 800) {
+              (details.primaryVelocity != null &&
+                  details.primaryVelocity! > 800)) {
             _close();
           } else {
-            // 回弹
             setState(() => _dragOffset = 0);
           }
         },
@@ -108,12 +93,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             child: SafeArea(
               child: Column(
                 children: [
-                  // ───── 顶部：handle + 模式名 ─────
+                  // 顶部：handle + 模式名
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
                     child: Column(
                       children: [
-                        // 顶部小横条（可视化下拉手势区）
                         Container(
                           width: 40,
                           height: 4,
@@ -154,7 +138,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
                   const Spacer(),
 
-                  // ───── 封面 ─────
+                  // 封面
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 48),
                     child: AspectRatio(
@@ -181,7 +165,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
                   const SizedBox(height: 28),
 
-                  // ───── 标题 ─────
+                  // 标题
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Column(
@@ -214,7 +198,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
                   const SizedBox(height: 20),
 
-                  // ───── 进度条 ─────
+                  // 进度条
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Column(
@@ -259,13 +243,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
                   const SizedBox(height: 12),
 
-                  // ───── 控制按钮 ─────
+                  // 控制按钮
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        // 播放模式
+                        // 播放模式（三种都高亮）
                         GestureDetector(
                           onTap: () {
                             HapticFeedback.selectionClick();
@@ -276,9 +260,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                             child: Icon(
                               _modeIcon(player.mode),
                               size: 24,
-                              color: player.mode == PlayMode.sequential
-                                  ? AppColors.text
-                                  : AppColors.primary,
+                              color: AppColors.primary,
                             ),
                           ),
                         ),

@@ -112,14 +112,12 @@ class MusicApi {
             .where((s) => s.isNotEmpty)
             .join('; ');
       }
-
       final json = jsonDecode(utf8.decode(res.bodyBytes));
       final wbiImg = json['data']?['wbi_img'];
       if (wbiImg == null) {
         print('⚠️ nav 未返回 wbi_img');
         return;
       }
-
       _imgKey = (wbiImg['img_url'] as String).split('/').last.split('.').first;
       _subKey = (wbiImg['sub_url'] as String).split('/').last.split('.').first;
       print('✅ WBI 密钥获取成功 (cookies: ${_cookies.length} 字符)');
@@ -176,21 +174,17 @@ class MusicApi {
         'page_size': '30',
       };
       _signParams(params);
-
       final uri = Uri.parse(_searchUrl).replace(queryParameters: params);
       final res = await http
           .get(uri, headers: _headers())
           .timeout(const Duration(seconds: 15));
-
       final json = jsonDecode(utf8.decode(res.bodyBytes));
       if (json['code'] != 0) {
         print('❌ 搜索失败: ${json['message']} (code: ${json['code']})');
         return [];
       }
-
       final results = json['data']?['result'] as List? ?? [];
       print('📋 搜索到 ${results.length} 条结果');
-
       return results
           .where((item) => item['type'] == 'video')
           .map((item) {

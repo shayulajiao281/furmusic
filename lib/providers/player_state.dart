@@ -5,10 +5,9 @@ import 'package:just_audio_background/just_audio_background.dart';
 import '../models/song.dart';
 import '../services/music_api.dart';
 
-/// 播放模式
+/// 播放模式（默认列表循环）
 enum PlayMode {
-  sequential, // 顺序播放（播完停）
-  repeatAll, // 列表循环
+  repeatAll, // 列表循环（默认）
   repeatOne, // 单曲循环
   shuffle, // 随机播放
 }
@@ -16,7 +15,7 @@ enum PlayMode {
 class PlayerState {
   final Song? current;
   final bool isPlaying;
-  final bool isLoading; // ★ 队列加载中
+  final bool isLoading;
   final Duration position;
   final Duration duration;
   final List<MapEntry<double, String>> lyric;
@@ -31,7 +30,7 @@ class PlayerState {
     this.duration = Duration.zero,
     this.lyric = const [],
     this.lyricIndex = -1,
-    this.mode = PlayMode.sequential,
+    this.mode = PlayMode.repeatAll, // ★ 默认列表循环
   });
 
   PlayerState copyWith({
@@ -63,13 +62,15 @@ class PlayerState {
 class PlayerNotifier extends Notifier<PlayerState> {
   final AudioPlayer _player = AudioPlayer();
   Duration _lastKnownDuration = Duration.zero;
-
-  /// 内部队列（和 just_audio 的队列一一对应）
   List<Song> _queue = [];
 
   @override
   PlayerState build() {
-    // ★ 切歌：just_audio 自己维护 currentIndex
+    // ★ 首次打开就设为列表循环
+    _player.setLoopMode(LoopMode.all);
+    _player.setShuffleModeEnabled(false);
+
+    // 切歌
     _player.currentIndexStream.listen((idx) {
       if (idx == null || idx < 0 || idx >= _queue.length) return;
       final song = _queue[idx];
@@ -111,6 +112,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
       }
     });
 
+    // ★ 播放完成交给 just_audio 自己处理（LoopMode.all 会自动下一首）
+    // 删掉了 processingStateStream 的手动 next 逻辑
+
     return PlayerState();
   }
 
@@ -122,7 +126,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     final list = queue ?? [song];
 
-    // 显示加载状态
     state = state.copyWith(
       current: song,
       isLoading: true,
@@ -132,7 +135,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       lyricIndex: -1,
     );
 
-    // ★ 解析整个队列的 URL（并发限流 8）
     final resolved = await _resolveAll(list);
 
     if (resolved.isEmpty) {
@@ -141,7 +143,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       return;
     }
 
-    // 找当前歌在 resolved 里的索引
     final idx = resolved.indexWhere((s) => s.id == song.id);
     if (idx < 0) {
       state = state.copyWith(isLoading: false);
@@ -153,7 +154,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     state = state.copyWith(isLoading: false);
 
     try {
-      // ★ 一次性加载整个队列（让锁屏上一曲/下一曲可用）
       await _player.setAudioSources(
         resolved.map(_toSource).toList(),
         initialIndex: idx,
@@ -184,7 +184,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     );
   }
 
-  /// 并发解析整个队列，失败的直接过滤掉
+  /// 并发解析整个队列
   Future<List<Song>> _resolveAll(List<Song> list) async {
     final result = <Song>[];
     const concurrent = 8;
@@ -213,7 +213,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return song.copyWith(audioPath: url);
   }
 
-  /// 异步加载歌词
   void _loadLyricAsync(String songId) {
     MusicApi.getLyric(songId)
         .then((lyric) {
@@ -225,15 +224,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
   }
 
   // ═══════════════════════════════════════════
-  // 播放模式
+  // 播放模式（3 种）
   // ═══════════════════════════════════════════
   Future<void> setPlayMode(PlayMode mode) async {
     state = state.copyWith(mode: mode);
     switch (mode) {
-      case PlayMode.sequential:
-        await _player.setLoopMode(LoopMode.off);
-        await _player.setShuffleModeEnabled(false);
-        break;
       case PlayMode.repeatAll:
         await _player.setLoopMode(LoopMode.all);
         await _player.setShuffleModeEnabled(false);
@@ -250,12 +245,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
   }
 
   Future<void> nextPlayMode() async {
-    final order = [
-      PlayMode.sequential,
-      PlayMode.repeatAll,
-      PlayMode.repeatOne,
-      PlayMode.shuffle,
-    ];
+    final order = [PlayMode.repeatAll, PlayMode.repeatOne, PlayMode.shuffle];
     final idx = order.indexOf(state.mode);
     await setPlayMode(order[(idx + 1) % order.length]);
   }
