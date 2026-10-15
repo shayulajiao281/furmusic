@@ -3,30 +3,41 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 
-const _kStorageKey = 'furkid_music_v1';
+const _kStorageKey = 'furkid_music_v2';
 
 final sharedPrefsProvider = Provider<SharedPreferences>((ref) {
   throw UnimplementedError('必须在 main.dart 里 override');
 });
 
 class AppState {
-  final List<Song> songs;
-  final List<String> recentPlayedIds;
+  final List<Song> localSongs;
+  final List<Song> favoriteSongs;
+  final List<Song> recentSongs;
 
-  AppState({List<Song>? songs, List<String>? recentPlayedIds})
-    : songs = songs ?? [],
-      recentPlayedIds = recentPlayedIds ?? [];
+  AppState({
+    List<Song>? localSongs,
+    List<Song>? favoriteSongs,
+    List<Song>? recentSongs,
+  }) : localSongs = localSongs ?? [],
+       favoriteSongs = favoriteSongs ?? [],
+       recentSongs = recentSongs ?? [];
 
   Map<String, dynamic> toJson() => {
-    'songs': songs.map((e) => e.toJson()).toList(),
-    'recent': recentPlayedIds,
+    'local': localSongs.map((e) => e.toJson()).toList(),
+    'favorites': favoriteSongs.map((e) => e.toJson()).toList(),
+    'recent': recentSongs.map((e) => e.toJson()).toList(),
   };
 
   factory AppState.fromJson(Map<String, dynamic> j) => AppState(
-    songs: (j['songs'] as List? ?? [])
+    localSongs: (j['local'] as List? ?? [])
         .map((e) => Song.fromJson(e as Map<String, dynamic>))
         .toList(),
-    recentPlayedIds: (j['recent'] as List? ?? []).cast<String>().toList(),
+    favoriteSongs: (j['favorites'] as List? ?? [])
+        .map((e) => Song.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    recentSongs: (j['recent'] as List? ?? [])
+        .map((e) => Song.fromJson(e as Map<String, dynamic>))
+        .toList(),
   );
 }
 
@@ -47,70 +58,60 @@ class AppStateNotifier extends Notifier<AppState> {
 
   void _persist() => _prefs.setString(_kStorageKey, jsonEncode(state.toJson()));
 
-  /// 覆盖本地歌单（保留已有收藏标记）
-  void setSongs(List<Song> newSongs) {
-    final favIds = state.songs
-        .where((s) => s.isFavorite)
-        .map((s) => s.id)
-        .toSet();
-    final merged = newSongs.map((s) {
-      if (favIds.contains(s.id)) return s.copyWith(isFavorite: true);
-      return s;
-    }).toList();
-    state = AppState(songs: merged, recentPlayedIds: state.recentPlayedIds);
-    _persist();
-  }
-
-  /// ★ 核心：切换收藏（接收完整 Song）
-  void toggleFavorite(Song song) {
-    final idx = state.songs.indexWhere((s) => s.id == song.id);
-
-    List<Song> newSongs;
-    if (idx >= 0) {
-      // 已存在 → 切换
-      newSongs = state.songs.map((s) {
-        if (s.id == song.id) return s.copyWith(isFavorite: !s.isFavorite);
-        return s;
-      }).toList();
-    } else {
-      // 不存在 → 加进列表 + 标为收藏
-      newSongs = [...state.songs, song.copyWith(isFavorite: true)];
-    }
-
-    state = AppState(songs: newSongs, recentPlayedIds: state.recentPlayedIds);
-    _persist();
-  }
-
-  /// 判断是否已收藏
-  bool isFavorite(String songId) {
-    final list = state.songs.where((s) => s.id == songId).toList();
-    return list.isNotEmpty && list.first.isFavorite;
-  }
-
-  void addRecent(String songId) {
-    final list = [songId, ...state.recentPlayedIds.where((id) => id != songId)];
+  /// 覆盖本地音乐（不动收藏和最近）
+  void setLocalSongs(List<Song> newSongs) {
     state = AppState(
-      songs: state.songs,
-      recentPlayedIds: list.take(20).toList(),
+      localSongs: newSongs,
+      favoriteSongs: state.favoriteSongs,
+      recentSongs: state.recentSongs,
     );
     _persist();
   }
 
-  List<Song> get recentSongs {
-    final map = {for (final s in state.songs) s.id: s};
-    return state.recentPlayedIds
-        .map((id) => map[id])
-        .whereType<Song>()
-        .toList();
+  /// 切换收藏
+  void toggleFavorite(Song song) {
+    final exists = state.favoriteSongs.any((s) => s.id == song.id);
+
+    List<Song> newFavs;
+    if (exists) {
+      newFavs = state.favoriteSongs.where((s) => s.id != song.id).toList();
+    } else {
+      newFavs = [...state.favoriteSongs, song.copyWith(isFavorite: true)];
+    }
+
+    state = AppState(
+      localSongs: state.localSongs,
+      favoriteSongs: newFavs,
+      recentSongs: state.recentSongs,
+    );
+    _persist();
   }
 
-  /// ★ 收藏列表
-  List<Song> get favoriteSongs =>
-      state.songs.where((s) => s.isFavorite).toList();
+  /// 记录播放
+  void addRecent(Song song) {
+    final list = [song, ...state.recentSongs.where((s) => s.id != song.id)];
+    state = AppState(
+      localSongs: state.localSongs,
+      favoriteSongs: state.favoriteSongs,
+      recentSongs: list.take(30).toList(),
+    );
+    _persist();
+  }
+
+  bool isFavorite(String songId) =>
+      state.favoriteSongs.any((s) => s.id == songId);
 }
 
 final appStateProvider = NotifierProvider<AppStateNotifier, AppState>(
   AppStateNotifier.new,
 );
 
-final allSongsProvider = Provider((ref) => ref.watch(appStateProvider).songs);
+final localSongsProvider = Provider(
+  (ref) => ref.watch(appStateProvider).localSongs,
+);
+final favoriteSongsProvider = Provider(
+  (ref) => ref.watch(appStateProvider).favoriteSongs,
+);
+final recentSongsProvider = Provider(
+  (ref) => ref.watch(appStateProvider).recentSongs,
+);

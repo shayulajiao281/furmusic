@@ -14,7 +14,7 @@ class ProfilePage extends ConsumerWidget {
     final appNotifier = ref.read(appStateProvider.notifier);
     final playerNotifier = ref.read(playerStateProvider.notifier);
     final player = ref.watch(playerStateProvider);
-    final favorites = appNotifier.favoriteSongs;
+    final favorites = ref.watch(favoriteSongsProvider);
 
     return Container(
       color: AppColors.bg,
@@ -22,7 +22,6 @@ class ProfilePage extends ConsumerWidget {
         bottom: false,
         child: Column(
           children: [
-            // 标题
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 16, 16, 14),
               child: Align(
@@ -38,12 +37,11 @@ class ProfilePage extends ConsumerWidget {
                 ),
               ),
             ),
-
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
                 children: [
-                  // ★ 本地音乐入口
+                  // 本地音乐入口
                   GestureDetector(
                     onTap: () => context.push('/local-music'),
                     child: Container(
@@ -114,8 +112,10 @@ class ProfilePage extends ConsumerWidget {
                       (s) => SongTile(
                         song: s,
                         active: player.current?.id == s.id,
-                        onTap: () =>
-                            playerNotifier.playSong(s, queue: favorites),
+                        onTap: () {
+                          playerNotifier.playSong(s, queue: favorites);
+                          appNotifier.addRecent(s);
+                        },
                         onFavorite: () => appNotifier.toggleFavorite(s),
                       ),
                     ),

@@ -25,13 +25,14 @@ class _LocalMusicPageState extends ConsumerState<LocalMusicPage> {
     setState(() => _scanning = true);
     final songs = await MusicScanner.scanLocal();
     if (!mounted) return;
-    ref.read(appStateProvider.notifier).setSongs(songs);
+    ref.read(appStateProvider.notifier).setLocalSongs(songs);
     setState(() => _scanning = false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final songs = ref.watch(allSongsProvider);
+    final songs = ref.watch(localSongsProvider);
+    final favorites = ref.watch(favoriteSongsProvider);
     final player = ref.watch(playerStateProvider);
     final playerNotifier = ref.read(playerStateProvider.notifier);
     final appNotifier = ref.read(appStateProvider.notifier);
@@ -61,10 +62,16 @@ class _LocalMusicPageState extends ConsumerState<LocalMusicPage> {
                 itemCount: songs.length,
                 itemBuilder: (_, i) {
                   final s = songs[i];
+                  final isFav = favorites.any((f) => f.id == s.id);
+                  final displaySong = s.copyWith(isFavorite: isFav);
+
                   return SongTile(
-                    song: s,
+                    song: displaySong,
                     active: player.current?.id == s.id,
-                    onTap: () => playerNotifier.playSong(s, queue: songs),
+                    onTap: () {
+                      playerNotifier.playSong(s, queue: songs);
+                      appNotifier.addRecent(s);
+                    },
                     onFavorite: () => appNotifier.toggleFavorite(s),
                   );
                 },

@@ -13,7 +13,8 @@ class MusicPage extends ConsumerWidget {
     final appNotifier = ref.read(appStateProvider.notifier);
     final playerNotifier = ref.read(playerStateProvider.notifier);
     final player = ref.watch(playerStateProvider);
-    final recent = appNotifier.recentSongs;
+    final recent = ref.watch(recentSongsProvider);
+    final favorites = ref.watch(favoriteSongsProvider);
 
     return Container(
       color: AppColors.bg,
@@ -21,7 +22,6 @@ class MusicPage extends ConsumerWidget {
         bottom: false,
         child: Column(
           children: [
-            // 标题
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
               child: Row(
@@ -57,8 +57,6 @@ class MusicPage extends ConsumerWidget {
                 ],
               ),
             ),
-
-            // 列表
             Expanded(
               child: recent.isEmpty
                   ? _empty()
@@ -67,11 +65,16 @@ class MusicPage extends ConsumerWidget {
                       itemCount: recent.length,
                       itemBuilder: (_, i) {
                         final s = recent[i];
+                        final isFav = favorites.any((f) => f.id == s.id);
+                        final displaySong = s.copyWith(isFavorite: isFav);
+
                         return SongTile(
-                          song: s,
+                          song: displaySong,
                           active: player.current?.id == s.id,
-                          onTap: () =>
-                              playerNotifier.playSong(s, queue: recent),
+                          onTap: () {
+                            playerNotifier.playSong(s, queue: recent);
+                            appNotifier.addRecent(s);
+                          },
                           onFavorite: () => appNotifier.toggleFavorite(s),
                         );
                       },

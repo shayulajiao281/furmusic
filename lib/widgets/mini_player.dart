@@ -15,10 +15,8 @@ class MiniPlayer extends ConsumerWidget {
     final song = player.current;
     if (song == null) return const SizedBox.shrink();
 
-    // 从 app_state 拿实时收藏状态
-    final allSongs = ref.watch(allSongsProvider);
-    final live = allSongs.where((s) => s.id == song.id).toList();
-    final isFav = live.isNotEmpty ? live.first.isFavorite : false;
+    final favorites = ref.watch(favoriteSongsProvider);
+    final isFav = favorites.any((s) => s.id == song.id);
 
     return GestureDetector(
       onTap: () => context.push('/player'),
@@ -64,7 +62,6 @@ class MiniPlayer extends ConsumerWidget {
                 ],
               ),
             ),
-            // 收藏
             GestureDetector(
               onTap: () =>
                   ref.read(appStateProvider.notifier).toggleFavorite(song),
@@ -77,7 +74,6 @@ class MiniPlayer extends ConsumerWidget {
                 ),
               ),
             ),
-            // 播放/暂停
             GestureDetector(
               onTap: () => ref.read(playerStateProvider.notifier).togglePlay(),
               child: Padding(
@@ -91,7 +87,6 @@ class MiniPlayer extends ConsumerWidget {
                 ),
               ),
             ),
-            // 下一首
             GestureDetector(
               onTap: () => ref.read(playerStateProvider.notifier).next(),
               child: const Padding(

@@ -63,9 +63,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       );
     }
 
-    final allSongs = ref.watch(allSongsProvider);
-    final live = allSongs.where((s) => s.id == song.id).toList();
-    final isFav = live.isNotEmpty ? live.first.isFavorite : false;
+    // ★ 用新的 provider 查收藏状态
+    final favorites = ref.watch(favoriteSongsProvider);
+    final isFav = favorites.any((s) => s.id == song.id);
 
     return CupertinoPageScaffold(
       child: GestureDetector(
@@ -93,7 +93,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             child: SafeArea(
               child: Column(
                 children: [
-                  // 顶部：handle + 模式名
+                  // 顶部 handle + 模式名
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
                     child: Column(
@@ -249,7 +249,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        // 播放模式（三种都高亮）
+                        // 模式
                         GestureDetector(
                           onTap: () {
                             HapticFeedback.selectionClick();

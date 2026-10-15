@@ -43,36 +43,31 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     });
   }
 
-  /// 播放（加载逻辑在 player_state 里）
   void _playSong(Song song) {
     final notifier = ref.read(playerStateProvider.notifier);
     final appNotifier = ref.read(appStateProvider.notifier);
     notifier.playSong(song, queue: _results);
-    appNotifier.addRecent(song.id);
+    appNotifier.addRecent(song);
   }
 
-  /// 收藏（同步更新 _results，让心形立即变化）
   void _toggleFav(Song song) {
     final appNotifier = ref.read(appStateProvider.notifier);
     appNotifier.toggleFavorite(song);
 
-    final latest = ref
-        .read(appStateProvider)
-        .songs
-        .where((s) => s.id == song.id)
-        .toList();
-    if (latest.isNotEmpty) {
-      setState(() {
-        final idx = _results.indexWhere((s) => s.id == song.id);
-        if (idx >= 0) _results[idx] = latest.first;
-      });
-    }
+    // 从收藏列表里查最新状态，同步到 _results
+    final latest = ref.read(favoriteSongsProvider).any((s) => s.id == song.id);
+    setState(() {
+      final idx = _results.indexWhere((s) => s.id == song.id);
+      if (idx >= 0) {
+        _results[idx] = _results[idx].copyWith(isFavorite: latest);
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final player = ref.watch(playerStateProvider);
-    final allSongs = ref.watch(allSongsProvider);
+    final favorites = ref.watch(favoriteSongsProvider);
 
     return Container(
       color: AppColors.bg,
@@ -80,7 +75,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
         bottom: false,
         child: Column(
           children: [
-            // 标题
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 16, 16, 10),
               child: Align(
@@ -155,7 +149,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
 
             const SizedBox(height: 14),
 
-            // 结果列表
             Expanded(
               child: _loading
                   ? const Center(child: CupertinoActivityIndicator())
@@ -166,13 +159,8 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                       itemCount: _results.length,
                       itemBuilder: (_, i) {
                         final s = _results[i];
-                        // 从 state.songs 查最新收藏状态
-                        final live = allSongs
-                            .where((x) => x.id == s.id)
-                            .toList();
-                        final displaySong = live.isNotEmpty
-                            ? s.copyWith(isFavorite: live.first.isFavorite)
-                            : s;
+                        final isFav = favorites.any((f) => f.id == s.id);
+                        final displaySong = s.copyWith(isFavorite: isFav);
 
                         return SongTile(
                           song: displaySong,
@@ -184,7 +172,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                     ),
             ),
 
-            // ★ 底部加载提示条
             if (player.isLoading)
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 14),
