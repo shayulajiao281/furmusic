@@ -17,7 +17,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   final _searchCtrl = TextEditingController();
   List<Song> _results = [];
   bool _loading = false;
-  bool _resolving = false;
   bool _searched = false;
 
   @override
@@ -44,49 +43,19 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     });
   }
 
-  Future<void> _playSong(Song song) async {
-    if (_resolving) return;
-
-    if (song.audioPath.isNotEmpty) {
-      _doPlay(song);
-      return;
-    }
-
-    setState(() => _resolving = true);
-
-    final url = await MusicApi.getSongUrl(song.id);
-    if (!mounted) return;
-
-    setState(() => _resolving = false);
-
-    if (url == null || url.isEmpty) {
-      _alert('解析失败（可能是付费内容或区域限制）');
-      return;
-    }
-
-    final playable = song.copyWith(audioPath: url);
-
-    setState(() {
-      final idx = _results.indexWhere((s) => s.id == song.id);
-      if (idx >= 0) _results[idx] = playable;
-    });
-
-    _doPlay(playable);
-  }
-
-  void _doPlay(Song song) {
+  /// 播放（加载逻辑在 player_state 里）
+  void _playSong(Song song) {
     final notifier = ref.read(playerStateProvider.notifier);
     final appNotifier = ref.read(appStateProvider.notifier);
     notifier.playSong(song, queue: _results);
     appNotifier.addRecent(song.id);
   }
 
-  /// 收藏（点完后同步更新 _results，让心形变化）
+  /// 收藏（同步更新 _results，让心形立即变化）
   void _toggleFav(Song song) {
     final appNotifier = ref.read(appStateProvider.notifier);
     appNotifier.toggleFavorite(song);
 
-    // ★ 从 state 里读最新的收藏状态，同步到 _results
     final latest = ref
         .read(appStateProvider)
         .songs
@@ -100,28 +69,10 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     }
   }
 
-  void _alert(String msg) {
-    showCupertinoDialog(
-      context: context,
-      builder: (ctx) => CupertinoAlertDialog(
-        content: Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: Text(msg, style: const TextStyle(fontSize: 13)),
-        ),
-        actions: [
-          CupertinoDialogAction(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('好的'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final player = ref.watch(playerStateProvider);
-    final allSongs = ref.watch(allSongsProvider); // ★ watch，收藏变化时刷新
+    final allSongs = ref.watch(allSongsProvider);
 
     return Container(
       color: AppColors.bg,
@@ -215,7 +166,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                       itemCount: _results.length,
                       itemBuilder: (_, i) {
                         final s = _results[i];
-                        // ★ 从 state.songs 里查最新的收藏状态
+                        // 从 state.songs 查最新收藏状态
                         final live = allSongs
                             .where((x) => x.id == s.id)
                             .toList();
@@ -233,24 +184,25 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                     ),
             ),
 
-            // 底部"正在解析"提示条
-            if (_resolving)
+            // ★ 底部加载提示条
+            if (player.isLoading)
               Container(
-                padding: const EdgeInsets.symmetric(vertical: 12),
+                padding: const EdgeInsets.symmetric(vertical: 14),
                 color: const Color(0xED1E2231),
                 child: const Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     CupertinoActivityIndicator(
-                      radius: 8,
+                      radius: 9,
                       color: CupertinoColors.white,
                     ),
-                    SizedBox(width: 10),
+                    SizedBox(width: 12),
                     Text(
-                      '正在解析音频…',
+                      '正在加载队列…',
                       style: TextStyle(
                         color: CupertinoColors.white,
-                        fontSize: 13,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ],

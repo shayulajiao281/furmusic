@@ -19,6 +19,7 @@ class SongTile extends StatelessWidget {
   });
 
   String _fmt(Duration d) {
+    if (d.inMilliseconds == 0) return '--:--';
     final m = d.inMinutes;
     final s = d.inSeconds % 60;
     return '$m:${s.toString().padLeft(2, '0')}';
@@ -71,14 +72,16 @@ class SongTile extends StatelessWidget {
                 ],
               ),
             ),
+            // ★ 收藏按钮
             if (onFavorite != null)
               GestureDetector(
+                behavior: HitTestBehavior.opaque,
                 onTap: () {
                   HapticFeedback.selectionClick();
                   onFavorite!();
                 },
                 child: Padding(
-                  padding: const EdgeInsets.all(6),
+                  padding: const EdgeInsets.all(8),
                   child: Icon(
                     song.isFavorite
                         ? CupertinoIcons.heart_fill

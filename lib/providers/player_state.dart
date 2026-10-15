@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
@@ -6,7 +7,7 @@ import '../services/music_api.dart';
 
 /// 播放模式
 enum PlayMode {
-  sequential, // 顺序播放
+  sequential, // 顺序播放（播完停）
   repeatAll, // 列表循环
   repeatOne, // 单曲循环
   shuffle, // 随机播放
@@ -15,6 +16,7 @@ enum PlayMode {
 class PlayerState {
   final Song? current;
   final bool isPlaying;
+  final bool isLoading; // ★ 队列加载中
   final Duration position;
   final Duration duration;
   final List<MapEntry<double, String>> lyric;
@@ -24,6 +26,7 @@ class PlayerState {
   PlayerState({
     this.current,
     this.isPlaying = false,
+    this.isLoading = false,
     this.position = Duration.zero,
     this.duration = Duration.zero,
     this.lyric = const [],
@@ -34,6 +37,7 @@ class PlayerState {
   PlayerState copyWith({
     Song? current,
     bool? isPlaying,
+    bool? isLoading,
     Duration? position,
     Duration? duration,
     List<MapEntry<double, String>>? lyric,
@@ -42,6 +46,7 @@ class PlayerState {
   }) => PlayerState(
     current: current ?? this.current,
     isPlaying: isPlaying ?? this.isPlaying,
+    isLoading: isLoading ?? this.isLoading,
     position: position ?? this.position,
     duration: duration ?? this.duration,
     lyric: lyric ?? this.lyric,
@@ -59,15 +64,26 @@ class PlayerNotifier extends Notifier<PlayerState> {
   final AudioPlayer _player = AudioPlayer();
   Duration _lastKnownDuration = Duration.zero;
 
-  /// 内部队列
+  /// 内部队列（和 just_audio 的队列一一对应）
   List<Song> _queue = [];
-  int _currentIdx = 0;
-
-  /// 防止并发切歌
-  bool _switching = false;
 
   @override
   PlayerState build() {
+    // ★ 切歌：just_audio 自己维护 currentIndex
+    _player.currentIndexStream.listen((idx) {
+      if (idx == null || idx < 0 || idx >= _queue.length) return;
+      final song = _queue[idx];
+      _lastKnownDuration = song.duration;
+      state = state.copyWith(
+        current: song,
+        position: Duration.zero,
+        duration: song.duration,
+        lyric: const [],
+        lyricIndex: -1,
+      );
+      _loadLyricAsync(song.id);
+    });
+
     // 播放/暂停
     _player.playingStream.listen((p) {
       state = state.copyWith(isPlaying: p);
@@ -87,25 +103,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
       state = state.copyWith(position: pos, lyricIndex: idx);
     });
 
-    // 时长（只在 > 0 时覆盖）
+    // 时长
     _player.durationStream.listen((d) {
       if (d != null && d > Duration.zero) {
         _lastKnownDuration = d;
         state = state.copyWith(duration: d);
-      }
-    });
-
-    // 播放完成 → 自动切歌
-    _player.processingStateStream.listen((ps) {
-      if (ps == ProcessingState.completed) {
-        if (state.mode == PlayMode.repeatOne) {
-          // 单曲循环：重头播
-          _player.seek(Duration.zero);
-          _player.play();
-        } else {
-          // 其他模式：自动切下一首
-          _autoNext();
-        }
       }
     });
 
@@ -116,100 +118,107 @@ class PlayerNotifier extends Notifier<PlayerState> {
   // 播放入口
   // ═══════════════════════════════════════════
   Future<void> playSong(Song song, {List<Song>? queue}) async {
-    _queue = List.from(queue ?? [song]);
-    _currentIdx = _queue.indexWhere((s) => s.id == song.id);
-    if (_currentIdx < 0) {
-      _queue.insert(0, song);
-      _currentIdx = 0;
+    HapticFeedback.mediumImpact();
+
+    final list = queue ?? [song];
+
+    // 显示加载状态
+    state = state.copyWith(
+      current: song,
+      isLoading: true,
+      position: Duration.zero,
+      duration: song.duration,
+      lyric: const [],
+      lyricIndex: -1,
+    );
+
+    // ★ 解析整个队列的 URL（并发限流 8）
+    final resolved = await _resolveAll(list);
+
+    if (resolved.isEmpty) {
+      state = state.copyWith(isLoading: false);
+      print('❌ 队列里没有任何歌能播放');
+      return;
     }
 
-    // 更新当前歌为已解析的版本
-    _queue[_currentIdx] = song;
+    // 找当前歌在 resolved 里的索引
+    final idx = resolved.indexWhere((s) => s.id == song.id);
+    if (idx < 0) {
+      state = state.copyWith(isLoading: false);
+      print('❌ 当前歌解析失败');
+      return;
+    }
 
-    await _playCurrent();
-
-    // 预解析下一首
-    _prefetch(_currentIdx + 1);
-  }
-
-  /// 播放队列里的第 _currentIdx 首
-  Future<void> _playCurrent() async {
-    if (_switching) return;
-    _switching = true;
+    _queue = resolved;
+    state = state.copyWith(isLoading: false);
 
     try {
-      final song = _queue[_currentIdx];
-
-      // 未解析 URL → 先解析
-      if (song.audioPath.isEmpty) {
-        print('🔍 解析: ${song.title}');
-        final url = await MusicApi.getSongUrl(song.id);
-        if (url == null || url.isEmpty) {
-          print('❌ 解析失败: ${song.title}');
-          _switching = false;
-          return;
-        }
-        _queue[_currentIdx] = song.copyWith(audioPath: url);
-      }
-
-      final playable = _queue[_currentIdx];
-
-      // 重置状态
-      _lastKnownDuration = playable.duration;
-      state = state.copyWith(
-        current: playable,
-        position: Duration.zero,
-        duration: playable.duration,
-        lyric: const [],
-        lyricIndex: -1,
-      );
-
-      // 只加载当前这一首
-      await _player.setAudioSource(
-        AudioSource.uri(
-          Uri.parse(playable.audioPath),
-          tag: MediaItem(
-            id: playable.id,
-            title: playable.title,
-            artist: playable.artist,
-            album: playable.album,
-            duration: playable.duration,
-            artUri: playable.coverPath.isNotEmpty
-                ? Uri.tryParse(playable.coverPath)
-                : null,
-            extras: {
-              'audioPath': playable.audioPath,
-              'duration': playable.duration.inMilliseconds,
-            },
-          ),
-          headers: MusicApi.audioHeaders,
-        ),
+      // ★ 一次性加载整个队列（让锁屏上一曲/下一曲可用）
+      await _player.setAudioSources(
+        resolved.map(_toSource).toList(),
+        initialIndex: idx,
       );
       await _player.play();
-
-      // 加载歌词（异步）
-      final lyric = await MusicApi.getLyric(playable.id);
-      if (lyric.isNotEmpty) {
-        state = state.copyWith(lyric: lyric);
-      }
-
-      // 预解析下一首
-      _prefetch(_currentIdx + 1);
-    } finally {
-      _switching = false;
+      HapticFeedback.lightImpact();
+    } catch (e) {
+      print('❌ 播放失败: $e');
     }
   }
 
-  /// 后台预解析某首歌的 URL（不阻塞）
-  void _prefetch(int idx) {
-    if (idx < 0 || idx >= _queue.length) return;
-    if (_queue[idx].audioPath.isNotEmpty) return;
+  AudioSource _toSource(Song s) {
+    return AudioSource.uri(
+      Uri.parse(s.audioPath),
+      tag: MediaItem(
+        id: s.id,
+        title: s.title,
+        artist: s.artist,
+        album: s.album,
+        duration: s.duration,
+        artUri: s.coverPath.isNotEmpty ? Uri.tryParse(s.coverPath) : null,
+        extras: {
+          'audioPath': s.audioPath,
+          'duration': s.duration.inMilliseconds,
+        },
+      ),
+      headers: MusicApi.audioHeaders,
+    );
+  }
 
-    MusicApi.getSongUrl(_queue[idx].id)
-        .then((url) {
-          if (url != null && url.isNotEmpty) {
-            _queue[idx] = _queue[idx].copyWith(audioPath: url);
-            print('📦 预解析完成: ${_queue[idx].title}');
+  /// 并发解析整个队列，失败的直接过滤掉
+  Future<List<Song>> _resolveAll(List<Song> list) async {
+    final result = <Song>[];
+    const concurrent = 8;
+
+    for (int i = 0; i < list.length; i += concurrent) {
+      final end = (i + concurrent < list.length) ? i + concurrent : list.length;
+      final batch = <Future<Song?>>[];
+      for (int j = i; j < end; j++) {
+        final s = list[j];
+        if (s.audioPath.isNotEmpty) {
+          batch.add(Future.value(s));
+        } else {
+          batch.add(_resolveOne(s));
+        }
+      }
+      final resolved = await Future.wait(batch);
+      result.addAll(resolved.whereType<Song>());
+    }
+
+    return result;
+  }
+
+  Future<Song?> _resolveOne(Song song) async {
+    final url = await MusicApi.getSongUrl(song.id);
+    if (url == null || url.isEmpty) return null;
+    return song.copyWith(audioPath: url);
+  }
+
+  /// 异步加载歌词
+  void _loadLyricAsync(String songId) {
+    MusicApi.getLyric(songId)
+        .then((lyric) {
+          if (state.current?.id == songId && lyric.isNotEmpty) {
+            state = state.copyWith(lyric: lyric);
           }
         })
         .catchError((_) {});
@@ -220,15 +229,23 @@ class PlayerNotifier extends Notifier<PlayerState> {
   // ═══════════════════════════════════════════
   Future<void> setPlayMode(PlayMode mode) async {
     state = state.copyWith(mode: mode);
-    if (mode == PlayMode.repeatOne) {
-      await _player.setLoopMode(LoopMode.one);
-    } else {
-      await _player.setLoopMode(LoopMode.off);
-    }
-    if (mode == PlayMode.shuffle) {
-      await _player.setShuffleModeEnabled(true);
-    } else {
-      await _player.setShuffleModeEnabled(false);
+    switch (mode) {
+      case PlayMode.sequential:
+        await _player.setLoopMode(LoopMode.off);
+        await _player.setShuffleModeEnabled(false);
+        break;
+      case PlayMode.repeatAll:
+        await _player.setLoopMode(LoopMode.all);
+        await _player.setShuffleModeEnabled(false);
+        break;
+      case PlayMode.repeatOne:
+        await _player.setLoopMode(LoopMode.one);
+        await _player.setShuffleModeEnabled(false);
+        break;
+      case PlayMode.shuffle:
+        await _player.setLoopMode(LoopMode.all);
+        await _player.setShuffleModeEnabled(true);
+        break;
     }
   }
 
@@ -247,53 +264,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
   // 上一首 / 下一首
   // ═══════════════════════════════════════════
   Future<void> next() async {
-    if (_switching) return;
-    if (_queue.isEmpty) return;
-
-    if (state.mode == PlayMode.shuffle) {
-      _currentIdx = _randomIndex();
-    } else {
-      _currentIdx++;
-      if (_currentIdx >= _queue.length) {
-        if (state.mode == PlayMode.repeatAll) {
-          _currentIdx = 0;
-        } else {
-          return; // 顺序播放到底，停
-        }
-      }
-    }
-    await _playCurrent();
+    if (_player.hasNext) await _player.seekToNext();
   }
 
   Future<void> previous() async {
-    if (_switching) return;
-    if (_queue.isEmpty) return;
-
-    if (state.mode == PlayMode.shuffle) {
-      _currentIdx = _randomIndex();
-    } else {
-      _currentIdx--;
-      if (_currentIdx < 0) _currentIdx = 0;
-    }
-    await _playCurrent();
-  }
-
-  /// 播放完成时自动切歌
-  void _autoNext() {
-    if (_queue.isEmpty) return;
-    if (state.mode == PlayMode.sequential) {
-      if (_currentIdx >= _queue.length - 1) return; // 到底了，停
-    }
-    next();
-  }
-
-  int _randomIndex() {
-    if (_queue.length <= 1) return 0;
-    int idx;
-    do {
-      idx = DateTime.now().microsecondsSinceEpoch % _queue.length;
-    } while (idx == _currentIdx);
-    return idx;
+    if (_player.hasPrevious) await _player.seekToPrevious();
   }
 
   // ═══════════════════════════════════════════

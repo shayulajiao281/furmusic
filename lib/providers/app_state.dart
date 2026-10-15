@@ -47,7 +47,7 @@ class AppStateNotifier extends Notifier<AppState> {
 
   void _persist() => _prefs.setString(_kStorageKey, jsonEncode(state.toJson()));
 
-  /// 覆盖歌曲列表
+  /// 覆盖本地歌单（保留已有收藏标记）
   void setSongs(List<Song> newSongs) {
     final favIds = state.songs
         .where((s) => s.isFavorite)
@@ -61,18 +61,22 @@ class AppStateNotifier extends Notifier<AppState> {
     _persist();
   }
 
-  /// 切换收藏（接收完整 Song，不在列表里也能收藏）
+  /// ★ 核心：切换收藏（接收完整 Song）
   void toggleFavorite(Song song) {
     final idx = state.songs.indexWhere((s) => s.id == song.id);
+
     List<Song> newSongs;
     if (idx >= 0) {
+      // 已存在 → 切换
       newSongs = state.songs.map((s) {
         if (s.id == song.id) return s.copyWith(isFavorite: !s.isFavorite);
         return s;
       }).toList();
     } else {
+      // 不存在 → 加进列表 + 标为收藏
       newSongs = [...state.songs, song.copyWith(isFavorite: true)];
     }
+
     state = AppState(songs: newSongs, recentPlayedIds: state.recentPlayedIds);
     _persist();
   }
@@ -83,7 +87,6 @@ class AppStateNotifier extends Notifier<AppState> {
     return list.isNotEmpty && list.first.isFavorite;
   }
 
-  /// 记录播放
   void addRecent(String songId) {
     final list = [songId, ...state.recentPlayedIds.where((id) => id != songId)];
     state = AppState(
@@ -93,7 +96,6 @@ class AppStateNotifier extends Notifier<AppState> {
     _persist();
   }
 
-  /// 最近播放的歌曲
   List<Song> get recentSongs {
     final map = {for (final s in state.songs) s.id: s};
     return state.recentPlayedIds
@@ -102,7 +104,7 @@ class AppStateNotifier extends Notifier<AppState> {
         .toList();
   }
 
-  /// 收藏的歌曲
+  /// ★ 收藏列表
   List<Song> get favoriteSongs =>
       state.songs.where((s) => s.isFavorite).toList();
 }
