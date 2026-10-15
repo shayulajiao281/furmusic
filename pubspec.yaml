@@ -54,8 +54,15 @@ flutter_native_splash:
   image: assets/splash.jpeg
   color_dark: "#1E2231"
   image_dark: assets/splash.jpeg
+
+  # ★ 让图片铺满屏幕
+  android_gravity: fill              # Android：拉伸铺满
+  ios_content_mode: scaleAspectFill  # iOS：等比铺满 + 裁剪
+
   android_12:
     image: assets/splash.jpeg
     color: "#F4F5F9"
     icon_background_color: "#FF7A59"
+    android_gravity: fill            # Android 12+ 也要加
+
   fullscreen: true
