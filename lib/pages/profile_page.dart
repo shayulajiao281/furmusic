@@ -50,7 +50,7 @@ class ProfilePage extends ConsumerWidget {
                         song: s,
                         active: player.current?.id == s.id,
                         onTap: () => playerNotifier.playSong(s, queue: recent),
-                        onFavorite: () => appNotifier.toggleFavorite(s.id),
+                        onFavorite: () => appNotifier.toggleFavorite(s),
                       ),
                     ),
                   const SizedBox(height: 8),
@@ -64,7 +64,7 @@ class ProfilePage extends ConsumerWidget {
                         active: player.current?.id == s.id,
                         onTap: () =>
                             playerNotifier.playSong(s, queue: favorites),
-                        onFavorite: () => appNotifier.toggleFavorite(s.id),
+                        onFavorite: () => appNotifier.toggleFavorite(s),
                       ),
                     ),
                 ],

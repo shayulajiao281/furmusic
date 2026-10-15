@@ -15,6 +15,32 @@ class PlayerPage extends ConsumerWidget {
     return '$m:${s.toString().padLeft(2, '0')}';
   }
 
+  IconData _modeIcon(PlayMode m) {
+    switch (m) {
+      case PlayMode.sequential:
+        return CupertinoIcons.repeat;
+      case PlayMode.repeatAll:
+        return CupertinoIcons.repeat;
+      case PlayMode.repeatOne:
+        return CupertinoIcons.repeat_1;
+      case PlayMode.shuffle:
+        return CupertinoIcons.shuffle;
+    }
+  }
+
+  String _modeName(PlayMode m) {
+    switch (m) {
+      case PlayMode.sequential:
+        return '顺序播放';
+      case PlayMode.repeatAll:
+        return '列表循环';
+      case PlayMode.repeatOne:
+        return '单曲循环';
+      case PlayMode.shuffle:
+        return '随机播放';
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final player = ref.watch(playerStateProvider);
@@ -37,7 +63,7 @@ class PlayerPage extends ConsumerWidget {
         child: SafeArea(
           child: Column(
             children: [
-              // 顶部下拉关闭
+              // 顶部：下拉 + 模式名
               Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 16,
@@ -57,8 +83,8 @@ class PlayerPage extends ConsumerWidget {
                     ),
                     const Spacer(),
                     Text(
-                      '正在播放',
-                      style: TextStyle(
+                      _modeName(player.mode),
+                      style: const TextStyle(
                         fontSize: 12,
                         color: AppColors.muted,
                         fontWeight: FontWeight.w600,
@@ -72,7 +98,7 @@ class PlayerPage extends ConsumerWidget {
 
               const Spacer(),
 
-              // 大封面
+              // 封面
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 48),
                 child: AspectRatio(
@@ -81,11 +107,11 @@ class PlayerPage extends ConsumerWidget {
                     decoration: BoxDecoration(
                       color: AppColors.coverBg,
                       borderRadius: BorderRadius.circular(24),
-                      boxShadow: [
+                      boxShadow: const [
                         BoxShadow(
-                          color: const Color(0x1A1E2231),
+                          color: Color(0x1A1E2231),
                           blurRadius: 40,
-                          offset: const Offset(0, 16),
+                          offset: Offset(0, 16),
                         ),
                       ],
                     ),
@@ -97,7 +123,7 @@ class PlayerPage extends ConsumerWidget {
                 ),
               ),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
 
               // 标题
               Padding(
@@ -130,7 +156,7 @@ class PlayerPage extends ConsumerWidget {
                 ),
               ),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
 
               // 进度条
               Padding(
@@ -175,30 +201,28 @@ class PlayerPage extends ConsumerWidget {
                 ),
               ),
 
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
 
-              // 控制按钮
+              // 控制行：模式 / 上一首 / 播放 / 下一首 / 收藏
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 32),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // 收藏
+                    // 模式切换
                     GestureDetector(
                       onTap: () {
                         HapticFeedback.selectionClick();
-                        ref
-                            .read(appStateProvider.notifier)
-                            .toggleFavorite(song.id);
+                        notifier.nextPlayMode();
                       },
                       child: Padding(
                         padding: const EdgeInsets.all(8),
                         child: Icon(
-                          isFav
-                              ? CupertinoIcons.heart_fill
-                              : CupertinoIcons.heart,
-                          size: 26,
-                          color: isFav ? AppColors.red : AppColors.text,
+                          _modeIcon(player.mode),
+                          size: 24,
+                          color: player.mode == PlayMode.sequential
+                              ? AppColors.text
+                              : AppColors.primary,
                         ),
                       ),
                     ),
@@ -261,8 +285,25 @@ class PlayerPage extends ConsumerWidget {
                         ),
                       ),
                     ),
-                    // 占位，对齐收藏
-                    const SizedBox(width: 42),
+                    // 收藏
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        ref
+                            .read(appStateProvider.notifier)
+                            .toggleFavorite(song);
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Icon(
+                          isFav
+                              ? CupertinoIcons.heart_fill
+                              : CupertinoIcons.heart,
+                          size: 24,
+                          color: isFav ? AppColors.red : AppColors.text,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),

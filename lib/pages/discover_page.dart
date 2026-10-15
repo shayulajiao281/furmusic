@@ -16,8 +16,8 @@ class DiscoverPage extends ConsumerStatefulWidget {
 class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   final _searchCtrl = TextEditingController();
   List<Song> _results = [];
-  bool _loading = false; // 搜索中
-  bool _resolving = false; // 解析音频中
+  bool _loading = false;
+  bool _resolving = false;
   bool _searched = false;
 
   @override
@@ -45,10 +45,8 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   }
 
   Future<void> _playSong(Song song) async {
-    // 已经在解析中，忽略
     if (_resolving) return;
 
-    // 已获取过 URL，直接播
     if (song.audioPath.isNotEmpty) {
       _doPlay(song);
       return;
@@ -68,7 +66,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
 
     final playable = song.copyWith(audioPath: url);
 
-    // 更新列表里的这首歌，后续点击直接播
     setState(() {
       final idx = _results.indexWhere((s) => s.id == song.id);
       if (idx >= 0) _results[idx] = playable;
@@ -82,6 +79,25 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     final appNotifier = ref.read(appStateProvider.notifier);
     notifier.playSong(song, queue: _results);
     appNotifier.addRecent(song.id);
+  }
+
+  /// 收藏（点完后同步更新 _results，让心形变化）
+  void _toggleFav(Song song) {
+    final appNotifier = ref.read(appStateProvider.notifier);
+    appNotifier.toggleFavorite(song);
+
+    // ★ 从 state 里读最新的收藏状态，同步到 _results
+    final latest = ref
+        .read(appStateProvider)
+        .songs
+        .where((s) => s.id == song.id)
+        .toList();
+    if (latest.isNotEmpty) {
+      setState(() {
+        final idx = _results.indexWhere((s) => s.id == song.id);
+        if (idx >= 0) _results[idx] = latest.first;
+      });
+    }
   }
 
   void _alert(String msg) {
@@ -105,6 +121,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   @override
   Widget build(BuildContext context) {
     final player = ref.watch(playerStateProvider);
+    final allSongs = ref.watch(allSongsProvider); // ★ watch，收藏变化时刷新
 
     return Container(
       color: AppColors.bg,
@@ -161,7 +178,9 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                           color: AppColors.text,
                         ),
                         decoration: null,
+                        clearButtonMode: OverlayVisibilityMode.editing,
                         onSubmitted: (_) => _search(),
+                        onChanged: (_) => setState(() {}),
                         textInputAction: TextInputAction.search,
                       ),
                     ),
@@ -185,7 +204,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
 
             const SizedBox(height: 14),
 
-            // 结果
+            // 结果列表
             Expanded(
               child: _loading
                   ? const Center(child: CupertinoActivityIndicator())
@@ -196,10 +215,19 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                       itemCount: _results.length,
                       itemBuilder: (_, i) {
                         final s = _results[i];
+                        // ★ 从 state.songs 里查最新的收藏状态
+                        final live = allSongs
+                            .where((x) => x.id == s.id)
+                            .toList();
+                        final displaySong = live.isNotEmpty
+                            ? s.copyWith(isFavorite: live.first.isFavorite)
+                            : s;
+
                         return SongTile(
-                          song: s,
+                          song: displaySong,
                           active: player.current?.id == s.id,
                           onTap: () => _playSong(s),
+                          onFavorite: () => _toggleFav(displaySong),
                         );
                       },
                     ),

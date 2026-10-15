@@ -42,7 +42,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
         bottom: false,
         child: Column(
           children: [
-            // 固定顶部
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
               child: Row(
@@ -64,7 +63,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                         ),
                         const SizedBox(height: 3),
                         Text(
-                          songs.isEmpty ? '还没有歌曲' : '共 ${songs.length} 首本地音乐',
+                          songs.isEmpty ? '还没有歌曲' : '共 ${songs.length} 首',
                           style: const TextStyle(
                             fontSize: 12,
                             color: AppColors.muted,
@@ -107,8 +106,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 ],
               ),
             ),
-
-            // 列表
             Expanded(
               child: songs.isEmpty
                   ? _empty()
@@ -124,7 +121,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                             notifier.playSong(s, queue: songs);
                             appNotifier.addRecent(s.id);
                           },
-                          onFavorite: () => appNotifier.toggleFavorite(s.id),
+                          onFavorite: () => appNotifier.toggleFavorite(s),
                         );
                       },
                     ),

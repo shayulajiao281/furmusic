@@ -47,9 +47,8 @@ class AppStateNotifier extends Notifier<AppState> {
 
   void _persist() => _prefs.setString(_kStorageKey, jsonEncode(state.toJson()));
 
-  /// 覆盖歌曲列表（从本地扫描）
+  /// 覆盖歌曲列表
   void setSongs(List<Song> newSongs) {
-    // 保留原有收藏状态
     final favIds = state.songs
         .where((s) => s.isFavorite)
         .map((s) => s.id)
@@ -58,19 +57,30 @@ class AppStateNotifier extends Notifier<AppState> {
       if (favIds.contains(s.id)) return s.copyWith(isFavorite: true);
       return s;
     }).toList();
-
     state = AppState(songs: merged, recentPlayedIds: state.recentPlayedIds);
     _persist();
   }
 
-  /// 切换收藏
-  void toggleFavorite(String songId) {
-    final newSongs = state.songs.map((s) {
-      if (s.id == songId) return s.copyWith(isFavorite: !s.isFavorite);
-      return s;
-    }).toList();
+  /// 切换收藏（接收完整 Song，不在列表里也能收藏）
+  void toggleFavorite(Song song) {
+    final idx = state.songs.indexWhere((s) => s.id == song.id);
+    List<Song> newSongs;
+    if (idx >= 0) {
+      newSongs = state.songs.map((s) {
+        if (s.id == song.id) return s.copyWith(isFavorite: !s.isFavorite);
+        return s;
+      }).toList();
+    } else {
+      newSongs = [...state.songs, song.copyWith(isFavorite: true)];
+    }
     state = AppState(songs: newSongs, recentPlayedIds: state.recentPlayedIds);
     _persist();
+  }
+
+  /// 判断是否已收藏
+  bool isFavorite(String songId) {
+    final list = state.songs.where((s) => s.id == songId).toList();
+    return list.isNotEmpty && list.first.isFavorite;
   }
 
   /// 记录播放

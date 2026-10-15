@@ -3,13 +3,11 @@ import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import '../models/song.dart';
 
-// ─────────────────────────────────────────────
-// B站官方 API
-// ─────────────────────────────────────────────
 const _navUrl = 'https://api.bilibili.com/x/web-interface/nav';
 const _searchUrl = 'https://api.bilibili.com/x/web-interface/wbi/search/type';
 const _viewUrl = 'https://api.bilibili.com/x/web-interface/view';
 const _playUrl = 'https://api.bilibili.com/x/player/wbi/playurl';
+const _playerV2Url = 'https://api.bilibili.com/x/player/wbi/v2';
 
 const _ua =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -106,7 +104,6 @@ class MusicApi {
           )
           .timeout(const Duration(seconds: 10));
 
-      // 提取 Set-Cookie
       final setCookies = res.headers['set-cookie'];
       if (setCookies != null) {
         _cookies = setCookies
@@ -193,12 +190,6 @@ class MusicApi {
 
       final results = json['data']?['result'] as List? ?? [];
       print('📋 搜索到 ${results.length} 条结果');
-      if (results.isNotEmpty) {
-        final first = results[0];
-        print(
-          '🔍 duration 类型: ${first['duration'].runtimeType}, 值: ${first['duration']}',
-        );
-      }
 
       return results
           .where((item) => item['type'] == 'video')
@@ -222,13 +213,12 @@ class MusicApi {
   }
 
   // ═══════════════════════════════════════════
-  // 获取音频流：官方接口，只取 durl mp4
+  // 获取音频流
   // ═══════════════════════════════════════════
   static Future<String?> getSongUrl(String bvid) async {
     await _ensureWbi();
 
     try {
-      // ─── 步骤 1：获取 cid ───
       final viewRes = await http
           .get(Uri.parse('$_viewUrl?bvid=$bvid'), headers: _headers())
           .timeout(const Duration(seconds: 10));
@@ -241,14 +231,13 @@ class MusicApi {
       final cid = viewJson['data']?['cid'];
       if (cid == null) return null;
 
-      // ─── 步骤 2：请求 durl 格式（mp4，兼容最好，避开 PCDN）───
       final params = <String, String>{
         'bvid': bvid,
         'cid': cid.toString(),
-        'fnval': '1', // 只要 mp4
+        'fnval': '1',
         'fnver': '0',
-        'fourk': '0', // 不要 4K
-        'platform': 'html5', // html5 端更容易拿到普通 mp4
+        'fourk': '0',
+        'platform': 'html5',
         'high_quality': '0',
       };
       _signParams(params);
@@ -264,7 +253,6 @@ class MusicApi {
         return null;
       }
 
-      // ─── 优先 durl ───
       final durl = json['data']?['durl'] as List?;
       if (durl != null && durl.isNotEmpty) {
         for (final item in durl) {
@@ -273,13 +261,12 @@ class MusicApi {
             (item['backup_url'] as List?)?.cast<String>() ?? [],
           );
           if (url != null) {
-            print('✅ 解析成功 (durl): ${url.substring(0, 60)}...');
+            print('✅ 解析成功 (durl)');
             return url;
           }
         }
       }
 
-      // ─── 兜底 dash ───
       final dash = json['data']?['dash'];
       if (dash != null) {
         final audios = dash['audio'] as List?;
@@ -293,7 +280,7 @@ class MusicApi {
               (a['backupUrl'] as List?)?.cast<String>() ?? [],
             );
             if (url != null) {
-              print('✅ 解析成功 (dash): ${url.substring(0, 60)}...');
+              print('✅ 解析成功 (dash)');
               return url;
             }
           }
@@ -308,7 +295,71 @@ class MusicApi {
     }
   }
 
-  /// 挑选非 PCDN 的 URL
+  // ═══════════════════════════════════════════
+  // 获取字幕/歌词
+  // ═══════════════════════════════════════════
+  /// 返回 List<(秒, 文本)>
+  static Future<List<MapEntry<double, String>>> getLyric(String bvid) async {
+    await _ensureWbi();
+
+    try {
+      // ① 拿 aid + cid
+      final viewRes = await http
+          .get(Uri.parse('$_viewUrl?bvid=$bvid'), headers: _headers())
+          .timeout(const Duration(seconds: 10));
+
+      final viewJson = jsonDecode(utf8.decode(viewRes.bodyBytes));
+      if (viewJson['code'] != 0) return [];
+      final aid = viewJson['data']?['aid'];
+      final cid = viewJson['data']?['cid'];
+      if (aid == null || cid == null) return [];
+
+      // ② 请求字幕列表
+      final params = <String, String>{
+        'aid': aid.toString(),
+        'cid': cid.toString(),
+      };
+      _signParams(params);
+
+      final uri = Uri.parse(_playerV2Url).replace(queryParameters: params);
+      final res = await http
+          .get(uri, headers: _headers())
+          .timeout(const Duration(seconds: 10));
+
+      final json = jsonDecode(utf8.decode(res.bodyBytes));
+      final subtitles = json['data']?['subtitle']?['subtitles'] as List?;
+      if (subtitles == null || subtitles.isEmpty) {
+        print('ℹ️ 该视频无字幕');
+        return [];
+      }
+
+      // ③ 取第一个字幕的 URL
+      String? subUrl = subtitles[0]['subtitle_url']?.toString();
+      if (subUrl == null || subUrl.isEmpty) return [];
+      if (subUrl.startsWith('//')) subUrl = 'https:$subUrl';
+
+      // ④ 下载字幕 JSON
+      final subRes = await http
+          .get(Uri.parse(subUrl), headers: _headers())
+          .timeout(const Duration(seconds: 10));
+
+      final subJson = jsonDecode(utf8.decode(subRes.bodyBytes));
+      final body = subJson['body'] as List? ?? [];
+
+      return body.map<MapEntry<double, String>>((line) {
+        final from = (line['from'] as num?)?.toDouble() ?? 0;
+        final content = line['content']?.toString() ?? '';
+        return MapEntry(from, content);
+      }).toList();
+    } catch (e) {
+      print('❌ 获取字幕失败: $e');
+      return [];
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  // 工具
+  // ═══════════════════════════════════════════
   static String? _pickBestUrl(String primary, List<String> backups) {
     bool isPcdn(String u) {
       if (u.isEmpty) return true;
@@ -326,9 +377,6 @@ class MusicApi {
     return null;
   }
 
-  // ═══════════════════════════════════════════
-  // 工具
-  // ═══════════════════════════════════════════
   static String _cleanTitle(String raw) => raw
       .replaceAll(RegExp(r'<[^>]+>'), '')
       .replaceAll('&quot;', '"')

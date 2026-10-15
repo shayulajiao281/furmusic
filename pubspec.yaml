@@ -26,9 +26,36 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.7
 
 flutter:
   uses-material-design: true
 
 dependency_overrides:
   permission_handler_android: 13.0.1
+
+# ═══════════════════════════════════════════
+# ★ 新增：App 图标配置
+# ═══════════════════════════════════════════
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon.png"
+  adaptive_icon_background: "#FF7A59"
+  adaptive_icon_foreground: "assets/icon.png"
+  remove_alpha_ios: true
+
+# ═══════════════════════════════════════════
+# ★ 新增：启动画面配置
+# ═══════════════════════════════════════════
+flutter_native_splash:
+  color: "#F4F5F9"
+  image: assets/splash.jpeg
+  color_dark: "#1E2231"
+  image_dark: assets/splash.jpeg
+  android_12:
+    image: assets/splash.jpeg
+    color: "#F4F5F9"
+    icon_background_color: "#FF7A59"
+  fullscreen: true

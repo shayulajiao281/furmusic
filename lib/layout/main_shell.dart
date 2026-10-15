@@ -13,47 +13,53 @@ class MainShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).padding.bottom;
 
-    return CupertinoPageScaffold(
-      child: Column(
-        children: [
-          Expanded(child: navigationShell),
-          const MiniPlayer(),
-          Container(
-            height: 60 + bottom,
-            padding: EdgeInsets.only(bottom: bottom),
-            decoration: const BoxDecoration(
-              color: Color(0xF0FFFFFF),
-              border: Border(
-                top: BorderSide(color: Color(0x12141928), width: 1),
+    // ★ 关键：去掉 viewInsets.bottom，键盘弹起时导航栏不动
+    return MediaQuery.removeViewInsets(
+      context: context,
+      removeBottom: true,
+      child: CupertinoPageScaffold(
+        child: Column(
+          children: [
+            Expanded(child: navigationShell),
+            const MiniPlayer(),
+            // ─── Tabbar：76px + 安全区，对齐 FurKid ───
+            Container(
+              height: 76 + bottom,
+              padding: EdgeInsets.only(bottom: bottom),
+              decoration: const BoxDecoration(
+                color: Color(0xF0FFFFFF),
+                border: Border(
+                  top: BorderSide(color: Color(0x12141928), width: 1),
+                ),
+              ),
+              child: Row(
+                children: [
+                  _tab(
+                    context,
+                    0,
+                    CupertinoIcons.music_note,
+                    CupertinoIcons.music_note,
+                    '音乐',
+                  ),
+                  _tab(
+                    context,
+                    1,
+                    CupertinoIcons.compass,
+                    CupertinoIcons.compass_fill,
+                    '发现',
+                  ),
+                  _tab(
+                    context,
+                    2,
+                    CupertinoIcons.person,
+                    CupertinoIcons.person_fill,
+                    '我的',
+                  ),
+                ],
               ),
             ),
-            child: Row(
-              children: [
-                _tab(
-                  context,
-                  0,
-                  CupertinoIcons.music_note,
-                  CupertinoIcons.music_note,
-                  '音乐',
-                ),
-                _tab(
-                  context,
-                  1,
-                  CupertinoIcons.compass,
-                  CupertinoIcons.compass_fill,
-                  '发现',
-                ),
-                _tab(
-                  context,
-                  2,
-                  CupertinoIcons.person,
-                  CupertinoIcons.person_fill,
-                  '我的',
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
