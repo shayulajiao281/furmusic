@@ -1,0 +1,34 @@
+name: furkid_music
+description: A music player app
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_riverpod: ^3.3.0
+  go_router: ^17.0.0
+  shared_preferences: ^2.5.5
+  just_audio: ^0.10.6
+  just_audio_background: ^0.0.1-beta.17
+  audio_session: ^0.2.2
+  permission_handler: ^13.0.2
+  path_provider: ^2.1.5
+  http: ^1.6.0
+  bilibili_api: ^0.0.1
+  crypto: ^3.0.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+dependency_overrides:
+  permission_handler_android: 13.0.1
