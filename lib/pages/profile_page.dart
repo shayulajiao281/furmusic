@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
 import '../theme/app_colors.dart';
@@ -14,7 +15,6 @@ class ProfilePage extends ConsumerWidget {
     final playerNotifier = ref.read(playerStateProvider.notifier);
     final player = ref.watch(playerStateProvider);
     final favorites = appNotifier.favoriteSongs;
-    final recent = appNotifier.recentSongs;
 
     return Container(
       color: AppColors.bg,
@@ -22,6 +22,7 @@ class ProfilePage extends ConsumerWidget {
         bottom: false,
         child: Column(
           children: [
+            // 标题
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 16, 16, 14),
               child: Align(
@@ -37,23 +38,74 @@ class ProfilePage extends ConsumerWidget {
                 ),
               ),
             ),
+
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
                 children: [
-                  _sectionTitle('最近播放 · ${recent.length}'),
-                  if (recent.isEmpty)
-                    _emptyHint('还没有播放记录')
-                  else
-                    ...recent.map(
-                      (s) => SongTile(
-                        song: s,
-                        active: player.current?.id == s.id,
-                        onTap: () => playerNotifier.playSong(s, queue: recent),
-                        onFavorite: () => appNotifier.toggleFavorite(s),
+                  // ★ 本地音乐入口
+                  GestureDetector(
+                    onTap: () => context.push('/local-music'),
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 14),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: AppColors.card,
+                        borderRadius: BorderRadius.circular(18),
+                        boxShadow: AppColors.cardShadow,
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 44,
+                            height: 44,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: AppColors.primarySoft,
+                              borderRadius: BorderRadius.circular(13),
+                            ),
+                            child: const Icon(
+                              CupertinoIcons.music_note_list,
+                              size: 22,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '本地音乐',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.text,
+                                    height: 1.3,
+                                  ),
+                                ),
+                                SizedBox(height: 3),
+                                Text(
+                                  '扫描手机里已下载的歌曲',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.muted,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Icon(
+                            CupertinoIcons.chevron_forward,
+                            size: 18,
+                            color: AppColors.muted,
+                          ),
+                        ],
                       ),
                     ),
-                  const SizedBox(height: 8),
+                  ),
+
+                  // 我的收藏
                   _sectionTitle('我的收藏 · ${favorites.length}'),
                   if (favorites.isEmpty)
                     _emptyHint('还没有收藏的歌曲')
@@ -77,7 +129,7 @@ class ProfilePage extends ConsumerWidget {
   }
 
   Widget _sectionTitle(String text) => Padding(
-    padding: const EdgeInsets.fromLTRB(4, 14, 4, 10),
+    padding: const EdgeInsets.fromLTRB(4, 4, 4, 10),
     child: Text(
       text,
       style: const TextStyle(

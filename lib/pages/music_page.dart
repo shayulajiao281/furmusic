@@ -2,39 +2,18 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
-import '../services/music_scanner.dart';
 import '../theme/app_colors.dart';
 import '../widgets/song_tile.dart';
 
-class MusicPage extends ConsumerStatefulWidget {
+class MusicPage extends ConsumerWidget {
   const MusicPage({super.key});
-  @override
-  ConsumerState<MusicPage> createState() => _MusicPageState();
-}
-
-class _MusicPageState extends ConsumerState<MusicPage> {
-  bool _scanning = false;
 
   @override
-  void initState() {
-    super.initState();
-    _scan();
-  }
-
-  Future<void> _scan() async {
-    setState(() => _scanning = true);
-    final songs = await MusicScanner.scanLocal();
-    if (!mounted) return;
-    ref.read(appStateProvider.notifier).setSongs(songs);
-    setState(() => _scanning = false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final songs = ref.watch(allSongsProvider);
-    final player = ref.watch(playerStateProvider);
-    final notifier = ref.read(playerStateProvider.notifier);
+  Widget build(BuildContext context, WidgetRef ref) {
     final appNotifier = ref.read(appStateProvider.notifier);
+    final playerNotifier = ref.read(playerStateProvider.notifier);
+    final player = ref.watch(playerStateProvider);
+    final recent = appNotifier.recentSongs;
 
     return Container(
       color: AppColors.bg,
@@ -42,6 +21,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
         bottom: false,
         child: Column(
           children: [
+            // 标题
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
               child: Row(
@@ -63,7 +43,9 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                         ),
                         const SizedBox(height: 3),
                         Text(
-                          songs.isEmpty ? '还没有歌曲' : '共 ${songs.length} 首',
+                          recent.isEmpty
+                              ? '还没有播放记录'
+                              : '最近播放 ${recent.length} 首',
                           style: const TextStyle(
                             fontSize: 12,
                             color: AppColors.muted,
@@ -72,55 +54,24 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                       ],
                     ),
                   ),
-                  GestureDetector(
-                    onTap: _scan,
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      margin: const EdgeInsets.only(top: 2),
-                      decoration: BoxDecoration(
-                        color: AppColors.primary,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: const [
-                          BoxShadow(
-                            color: Color(0x66FF7A59),
-                            blurRadius: 15,
-                            offset: Offset(0, 6),
-                          ),
-                        ],
-                      ),
-                      child: _scanning
-                          ? const Padding(
-                              padding: EdgeInsets.all(9),
-                              child: CupertinoActivityIndicator(
-                                color: CupertinoColors.white,
-                              ),
-                            )
-                          : const Icon(
-                              CupertinoIcons.arrow_clockwise,
-                              size: 18,
-                              color: CupertinoColors.white,
-                            ),
-                    ),
-                  ),
                 ],
               ),
             ),
+
+            // 列表
             Expanded(
-              child: songs.isEmpty
+              child: recent.isEmpty
                   ? _empty()
                   : ListView.builder(
                       padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
-                      itemCount: songs.length,
+                      itemCount: recent.length,
                       itemBuilder: (_, i) {
-                        final s = songs[i];
+                        final s = recent[i];
                         return SongTile(
                           song: s,
                           active: player.current?.id == s.id,
-                          onTap: () {
-                            notifier.playSong(s, queue: songs);
-                            appNotifier.addRecent(s.id);
-                          },
+                          onTap: () =>
+                              playerNotifier.playSong(s, queue: recent),
                           onFavorite: () => appNotifier.toggleFavorite(s),
                         );
                       },
@@ -139,7 +90,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
         Text('🎵', style: TextStyle(fontSize: 50, height: 1)),
         SizedBox(height: 14),
         Text(
-          '还没有歌曲\n点右上角扫描本地音乐',
+          '还没有播放记录\n去「发现」页搜歌试试',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 13.5, color: AppColors.muted, height: 1.7),
         ),

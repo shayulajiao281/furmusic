@@ -19,35 +19,7 @@ class MusicScanner {
 
   /// 内置示例（用公开免费音频）
   static List<Song> _demoSongs() {
-    return [
-      Song(
-        id: 'demo_1',
-        title: '晨光',
-        artist: '示例音乐',
-        album: 'FurKid 精选',
-        audioPath:
-            'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-        duration: const Duration(minutes: 6, seconds: 12),
-      ),
-      Song(
-        id: 'demo_2',
-        title: '微风',
-        artist: '示例音乐',
-        album: 'FurKid 精选',
-        audioPath:
-            'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-        duration: const Duration(minutes: 5, seconds: 30),
-      ),
-      Song(
-        id: 'demo_3',
-        title: '星河',
-        artist: '示例音乐',
-        album: 'FurKid 精选',
-        audioPath:
-            'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
-        duration: const Duration(minutes: 7, seconds: 10),
-      ),
-    ];
+    return [];
   }
 
   static Future<List<Song>> _scanDirs() async {

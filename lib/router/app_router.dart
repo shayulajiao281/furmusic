@@ -5,6 +5,7 @@ import '../pages/music_page.dart';
 import '../pages/discover_page.dart';
 import '../pages/profile_page.dart';
 import '../pages/player_page.dart';
+import '../pages/local_music_page.dart'; // ★ 新增
 
 final appRouter = GoRouter(
   initialLocation: '/music',
@@ -32,11 +33,13 @@ final appRouter = GoRouter(
         ),
       ],
     ),
-    // 全屏播放页（从底部滑出）
+    // 全屏播放页
     GoRoute(
       path: '/player',
       pageBuilder: (_, __) =>
           const CupertinoPage(fullscreenDialog: true, child: PlayerPage()),
     ),
+    // ★ 本地音乐页
+    GoRoute(path: '/local-music', builder: (_, __) => const LocalMusicPage()),
   ],
 );
