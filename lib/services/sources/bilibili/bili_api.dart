@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import '../../../models/song.dart';
+import '../../auth_store.dart';
 
 const _navUrl = 'https://api.bilibili.com/x/web-interface/nav';
 const _searchUrl = 'https://api.bilibili.com/x/web-interface/wbi/search/type';
@@ -79,7 +80,6 @@ const _mixinKeyEncTab = [
   52,
 ];
 
-/// B 站搜索结果（仅 BilibiliSource 内部使用）
 class BiliSearchResult {
   final List<Song> songs;
   final int page;
@@ -97,16 +97,19 @@ class BiliApi {
   static String? _subKey;
   static String _cookies = '';
 
-  /// 音频流需要的请求头（Referer + Cookie）
+  /// ★ cookie 合并：用户登录的优先，没登录用自动抓的
+  static String _cookie() {
+    final custom = AuthStore.getCookie('bilibili');
+    if (custom != null && custom.isNotEmpty) return custom;
+    return _cookies;
+  }
+
   static Map<String, String> get audioHeaders => {
     'User-Agent': _ua,
     'Referer': 'https://www.bilibili.com',
-    if (_cookies.isNotEmpty) 'Cookie': _cookies,
+    if (_cookie().isNotEmpty) 'Cookie': _cookie(),
   };
 
-  // ═══════════════════════════════════════════
-  // WBI 签名 + Cookie
-  // ═══════════════════════════════════════════
   static Future<void> _ensureWbi() async {
     if (_imgKey != null && _subKey != null) return;
     try {
@@ -169,12 +172,9 @@ class BiliApi {
   static Map<String, String> _headers() => {
     'User-Agent': _ua,
     'Referer': 'https://www.bilibili.com',
-    if (_cookies.isNotEmpty) 'Cookie': _cookies,
+    if (_cookie().isNotEmpty) 'Cookie': _cookie(),
   };
 
-  // ═══════════════════════════════════════════
-  // 搜索
-  // ═══════════════════════════════════════════
   static Future<BiliSearchResult> search(
     String keyword, {
     int page = 1,
@@ -212,9 +212,6 @@ class BiliApi {
       final data = json['data'];
       final results = data?['result'] as List? ?? [];
       final numPages = data?['numPages'] as int? ?? 1;
-      final numResults = data?['numResults'] as int? ?? 0;
-
-      print('📋 第 $page 页：${results.length} 条 / 共 $numPages 页 $numResults 条');
 
       final songs = results
           .where((item) => item['type'] == 'video')
@@ -244,9 +241,6 @@ class BiliApi {
     }
   }
 
-  // ═══════════════════════════════════════════
-  // 解析音频流
-  // ═══════════════════════════════════════════
   static Future<String?> getSongUrl(String bvid) async {
     await _ensureWbi();
     if (_imgKey == null) return null;
@@ -257,10 +251,7 @@ class BiliApi {
           .timeout(const Duration(seconds: 10));
 
       final viewJson = jsonDecode(utf8.decode(viewRes.bodyBytes));
-      if (viewJson['code'] != 0) {
-        print('❌ 获取视频信息失败: ${viewJson['message']}');
-        return null;
-      }
+      if (viewJson['code'] != 0) return null;
       final cid = viewJson['data']?['cid'];
       if (cid == null) return null;
 
@@ -281,10 +272,7 @@ class BiliApi {
           .timeout(const Duration(seconds: 15));
 
       final json = jsonDecode(utf8.decode(res.bodyBytes));
-      if (json['code'] != 0) {
-        print('❌ playurl 失败: ${json['message']} (code: ${json['code']})');
-        return null;
-      }
+      if (json['code'] != 0) return null;
 
       final durl = json['data']?['durl'] as List?;
       if (durl != null && durl.isNotEmpty) {
@@ -293,10 +281,7 @@ class BiliApi {
             item['url']?.toString() ?? '',
             (item['backup_url'] as List?)?.cast<String>() ?? [],
           );
-          if (url != null) {
-            print('✅ 解析成功 (durl)');
-            return url;
-          }
+          if (url != null) return url;
         }
       }
 
@@ -312,15 +297,11 @@ class BiliApi {
               a['baseUrl']?.toString() ?? '',
               (a['backupUrl'] as List?)?.cast<String>() ?? [],
             );
-            if (url != null) {
-              print('✅ 解析成功 (dash)');
-              return url;
-            }
+            if (url != null) return url;
           }
         }
       }
 
-      print('❌ 无可用音频流');
       return null;
     } catch (e) {
       print('❌ 解析异常: $e');
@@ -328,9 +309,6 @@ class BiliApi {
     }
   }
 
-  // ═══════════════════════════════════════════
-  // 获取字幕/歌词
-  // ═══════════════════════════════════════════
   static Future<List<MapEntry<double, String>>> getLyric(String bvid) async {
     await _ensureWbi();
 
@@ -358,10 +336,7 @@ class BiliApi {
 
       final json = jsonDecode(utf8.decode(res.bodyBytes));
       final subtitles = json['data']?['subtitle']?['subtitles'] as List?;
-      if (subtitles == null || subtitles.isEmpty) {
-        print('ℹ️ 该视频无字幕');
-        return [];
-      }
+      if (subtitles == null || subtitles.isEmpty) return [];
 
       String? subUrl = subtitles[0]['subtitle_url']?.toString();
       if (subUrl == null || subUrl.isEmpty) return [];
@@ -385,9 +360,6 @@ class BiliApi {
     }
   }
 
-  // ═══════════════════════════════════════════
-  // 工具
-  // ═══════════════════════════════════════════
   static String? _pickBestUrl(String primary, List<String> backups) {
     bool isPcdn(String u) {
       if (u.isEmpty) return true;

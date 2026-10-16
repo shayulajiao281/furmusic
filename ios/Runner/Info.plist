@@ -53,5 +53,30 @@
 		<true/>
 		<key>UIViewControllerBasedStatusBarAppearance</key>
 		<false/>
+
+		<!-- ★ flutter_inappwebview：允许 WebView 加载 HTTP 内容 -->
+		<key>NSAppTransportSecurity</key>
+		<dict>
+			<key>NSAllowsArbitraryLoads</key>
+			<true/>
+			<key>NSAllowsArbitraryLoadsInWebContent</key>
+			<true/>
+		</dict>
+
+		<!-- ★ flutter_inappwebview：允许 WebView 内联播放媒体（可选） -->
+		<key>NSAllowsInlineMediaPlayback</key>
+		<true/>
+
+		<!-- ★ 如果 QQ / B站登录页会调用相机扫码 -->
+		<key>NSCameraUsageDescription</key>
+		<string>用于扫描登录二维码</string>
+
+		<!-- ★ 如果登录页会调用相册上传头像 -->
+		<key>NSPhotoLibraryUsageDescription</key>
+		<string>用于选择本地图片</string>
+
+		<!-- ★ 如果登录页会调用麦克风（语音验证等） -->
+		<key>NSMicrophoneUsageDescription</key>
+		<string>用于语音验证</string>
 	</dict>
 </plist>

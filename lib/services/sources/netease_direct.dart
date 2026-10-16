@@ -1,6 +1,7 @@
 import 'dart:convert';
 import '../../models/song.dart';
 import '../music_source.dart';
+import '../auth_store.dart';
 import 'direct_source.dart';
 
 class NeteaseDirect extends DirectSource {
@@ -16,7 +17,7 @@ class NeteaseDirect extends DirectSource {
     'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Referer': 'https://music.163.com/',
-    'Cookie': 'appver=8.7.01; os=pc;',
+    'Cookie': AuthStore.cookieFor('netease'),
   };
 
   @override
@@ -35,7 +36,6 @@ class NeteaseDirect extends DirectSource {
   SearchResult parseSearchResult(Map<String, dynamic> json) {
     try {
       final songs = (json['result']?['songs'] as List? ?? []).map((item) {
-        // ★ fee != 0 视为 VIP / 付费
         final fee = (item['fee'] as int?) ?? 0;
         final isVip = fee != 0;
 

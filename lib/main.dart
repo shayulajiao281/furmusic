@@ -6,22 +6,24 @@ import 'providers/app_state.dart';
 import 'router/app_router.dart';
 import 'theme/app_colors.dart';
 import 'services/audio_cache.dart';
+import 'services/auth_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ★ 初始化后台播放（必须，否则锁屏/通知无控制）
   await JustAudioBackground.init(
     androidNotificationChannelId: 'com.furkid.music.channel.audio',
     androidNotificationChannelName: 'FurKid Music',
     androidNotificationOngoing: true,
   );
 
-  // 预热缓存目录 + 清理超量
   await AudioCache.size();
   AudioCache.trim().catchError((_) {});
 
   final prefs = await SharedPreferences.getInstance();
+
+  // ★ 把 prefs 挂给 AuthStore
+  AuthStore.attach(prefs);
 
   runApp(
     ProviderScope(

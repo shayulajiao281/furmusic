@@ -1,6 +1,7 @@
 import 'dart:convert';
 import '../../models/song.dart';
 import '../music_source.dart';
+import '../auth_store.dart';
 import 'direct_source.dart';
 
 class QQDirect extends DirectSource {
@@ -12,11 +13,15 @@ class QQDirect extends DirectSource {
   int get weight => 7;
 
   @override
-  Map<String, String> get headers => {
-    'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Referer': 'https://y.qq.com/',
-  };
+  Map<String, String> get headers {
+    final cookie = AuthStore.cookieFor('qq');
+    return {
+      'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': 'https://y.qq.com/',
+      if (cookie.isNotEmpty) 'Cookie': cookie,
+    };
+  }
 
   @override
   Uri searchUri(String keyword, int page, int pageSize) {
@@ -44,7 +49,6 @@ class QQDirect extends DirectSource {
             ? ''
             : 'https://y.gtimg.cn/music/photo_new/T002R300x300M000$albumMid.jpg';
 
-        // ★ payplay == 1 视为 VIP / 付费
         final pay = item['pay'] as Map?;
         final payplay = (pay?['payplay'] as int?) ?? 0;
         final isVip = payplay == 1;
@@ -71,6 +75,14 @@ class QQDirect extends DirectSource {
   @override
   Future<String?> getSongUrlById(String songId) async {
     try {
+      // 如果已登录，uin 用真实 cookie 里的；否则 0
+      String uin = '0';
+      final c = AuthStore.getCookie('qq');
+      if (c != null) {
+        final m = RegExp(r'(?:^|;\s*)uin=o?(\d+)').firstMatch(c);
+        if (m != null) uin = m.group(1)!;
+      }
+
       final body = jsonEncode({
         'req_0': {
           'module': 'vkey.GetVkeyServer',
@@ -79,7 +91,7 @@ class QQDirect extends DirectSource {
             'guid': '10000',
             'songmid': [songId],
             'songtype': [0],
-            'uin': '0',
+            'uin': uin,
             'loginflag': 1,
             'platform': '20',
           },
