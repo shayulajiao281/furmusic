@@ -4,6 +4,8 @@ import '../providers/app_state.dart';
 import '../providers/player_state.dart';
 import '../services/music_scanner.dart';
 import '../theme/app_colors.dart';
+import '../utils/play_or_open.dart';
+import '../widgets/mini_player.dart';
 import '../widgets/song_tile.dart';
 
 class LocalMusicPage extends ConsumerStatefulWidget {
@@ -34,8 +36,11 @@ class _LocalMusicPageState extends ConsumerState<LocalMusicPage> {
     final songs = ref.watch(localSongsProvider);
     final favorites = ref.watch(favoriteSongsProvider);
     final player = ref.watch(playerStateProvider);
-    final playerNotifier = ref.read(playerStateProvider.notifier);
     final appNotifier = ref.read(appStateProvider.notifier);
+
+    final hasSong = ref.watch(
+      playerStateProvider.select((s) => s.current != null),
+    );
 
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
@@ -55,27 +60,54 @@ class _LocalMusicPageState extends ConsumerState<LocalMusicPage> {
       ),
       child: Container(
         color: AppColors.bg,
-        child: songs.isEmpty
-            ? _empty()
-            : ListView.builder(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-                itemCount: songs.length,
-                itemBuilder: (_, i) {
-                  final s = songs[i];
-                  final isFav = favorites.any((f) => f.id == s.id);
-                  final displaySong = s.copyWith(isFavorite: isFav);
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: SafeArea(
+                top: true,
+                bottom: false,
+                child: Padding(
+                  padding: EdgeInsets.only(bottom: hasSong ? 56 : 0),
+                  child: songs.isEmpty
+                      ? _empty()
+                      : ListView.builder(
+                          padding:
+                              const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                          itemCount: songs.length,
+                          itemBuilder: (_, i) {
+                            final s = songs[i];
+                            final isFav = favorites.any(
+                              (f) => f.globalId == s.globalId,
+                            );
+                            final displaySong =
+                                s.copyWith(isFavorite: isFav);
 
-                  return SongTile(
-                    song: displaySong,
-                    active: player.current?.id == s.id,
-                    onTap: () {
-                      playerNotifier.playSong(s, queue: songs);
-                      appNotifier.addRecent(s);
-                    },
-                    onFavorite: () => appNotifier.toggleFavorite(s),
-                  );
-                },
+                            return SongTile(
+                              song: displaySong,
+                              active: player.current?.globalId == s.globalId,
+                              // ★ 用 playOrOpen
+                              onTap: () => playOrOpen(
+                                context,
+                                ref,
+                                s,
+                                queue: songs,
+                              ),
+                              onFavorite: () =>
+                                  appNotifier.toggleFavorite(s),
+                            );
+                          },
+                        ),
+                ),
               ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: const MiniPlayer(),
+            ),
+          ],
+        ),
       ),
     );
   }

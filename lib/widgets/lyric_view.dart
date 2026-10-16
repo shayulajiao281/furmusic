@@ -8,6 +8,9 @@ class LyricView extends StatefulWidget {
   final Color? activeColor;
   final Color? inactiveColor;
 
+  /// 当前行在视图中的位置（0.5 居中，0.667 = 2/3）
+  final double anchor;
+
   const LyricView({
     super.key,
     required this.lyric,
@@ -15,6 +18,7 @@ class LyricView extends StatefulWidget {
     required this.onSeek,
     this.activeColor,
     this.inactiveColor,
+    this.anchor = 0.667,
   });
 
   @override
@@ -23,7 +27,7 @@ class LyricView extends StatefulWidget {
 
 class _LyricViewState extends State<LyricView> {
   late ScrollController _scroll;
-  static const double _itemHeight = 44;
+  static const double _itemHeight = 48;
 
   @override
   void initState() {
@@ -37,7 +41,6 @@ class _LyricViewState extends State<LyricView> {
   @override
   void didUpdateWidget(covariant LyricView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 歌词内容换了（换歌）→ 立刻回顶
     if (oldWidget.lyric != widget.lyric) {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _scrollToCurrent(animate: false),
@@ -60,12 +63,12 @@ class _LyricViewState extends State<LyricView> {
     if (widget.lyric.isEmpty) return;
 
     final idx = widget.currentIndex.clamp(0, widget.lyric.length - 1);
+    // ★ 正确算法：第 idx 行中心点要落在 anchor 位置
+    //   padding.top 已经让第 0 行中心在 h*anchor 处
+    //   所以滚动到 idx * itemHeight 即可
     final target = idx * _itemHeight;
-    final viewport = _scroll.position.viewportDimension;
-    final offset = (target - viewport / 2 + _itemHeight / 2).clamp(
-      0.0,
-      _scroll.position.maxScrollExtent,
-    );
+    final max = _scroll.position.maxScrollExtent;
+    final offset = target.clamp(0.0, max);
 
     if (animate) {
       _scroll.animateTo(
@@ -91,13 +94,17 @@ class _LyricViewState extends State<LyricView> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final halfViewport = constraints.maxHeight / 2;
+        final h = constraints.maxHeight;
+        // padding.top 让第一行中心落在 anchor 位置
+        final topPad = h * widget.anchor - _itemHeight / 2;
+        final bottomPad = h * (1 - widget.anchor) - _itemHeight / 2;
+
         return ListView.builder(
           controller: _scroll,
           physics: const BouncingScrollPhysics(),
-          // 上下留白，让首行和末行也能滚到中间
-          padding: EdgeInsets.symmetric(
-            vertical: halfViewport - _itemHeight / 2,
+          padding: EdgeInsets.only(
+            top: topPad < 0 ? 0 : topPad,
+            bottom: bottomPad < 0 ? 0 : bottomPad,
           ),
           itemCount: widget.lyric.length,
           itemExtent: _itemHeight,
@@ -118,11 +125,14 @@ class _LyricViewState extends State<LyricView> {
                   child: AnimatedDefaultTextStyle(
                     duration: const Duration(milliseconds: 200),
                     style: TextStyle(
-                      fontSize: active ? 17 : 14,
-                      fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                      // ★ 当前行：加大、加粗、主题色
+                      fontSize: active ? 18 : 15,
+                      fontWeight:
+                          active ? FontWeight.w800 : FontWeight.w500,
                       color: active
                           ? (widget.activeColor ?? AppColors.primary)
-                          : (widget.inactiveColor ?? AppColors.muted),
+                          : (widget.inactiveColor ??
+                              AppColors.muted.withValues(alpha: 0.7)),
                       height: 1.3,
                     ),
                     child: Text(

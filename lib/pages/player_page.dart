@@ -1,10 +1,13 @@
+import 'dart:math' as math;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:palette_generator/palette_generator.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
 import '../theme/app_colors.dart';
 import '../widgets/song_cover.dart';
+import '../widgets/song_source_badge.dart';
 import '../widgets/lyric_view.dart';
 
 class PlayerPage extends ConsumerStatefulWidget {
@@ -17,9 +20,56 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   double _dragOffset = 0.0;
   double _screenHeight = 0;
   double? _dragProgress;
-
-  /// ★ 是否显示歌词（false = 显示封面）
   bool _showLyric = false;
+  static const double _lyricAnchor = 0.667;
+
+  /// ★ 从封面提取的多个颜色（用于律动背景）
+  List<Color> _paletteColors = const [AppColors.primary];
+  String? _extractedFor;
+
+  Future<void> _extractColor(String coverUrl, String songId) async {
+    if (coverUrl.isEmpty) return;
+    if (_extractedFor == songId) return;
+    _extractedFor = songId;
+    try {
+      final palette = await PaletteGenerator.fromImageProvider(
+        NetworkImage(coverUrl),
+        maximumColorCount: 16,
+      );
+
+      final colors = <Color>[];
+      // 收集多个颜色，优先鲜艳的
+      final vibrant = palette.vibrantColor?.color;
+      final dominant = palette.dominantColor?.color;
+      final muted = palette.mutedColor?.color;
+      final lightVibrant = palette.lightVibrantColor?.color;
+      final darkVibrant = palette.darkVibrantColor?.color;
+      final lightMuted = palette.lightMutedColor?.color;
+
+      for (final c in [vibrant, lightVibrant, dominant, muted, lightMuted, darkVibrant]) {
+        if (c != null && !colors.any((e) => _colorDist(e, c) < 0.15)) {
+          colors.add(c);
+        }
+      }
+
+      if (colors.isEmpty) colors.add(AppColors.primary);
+
+      // 最多取 4 个
+      if (colors.length > 4) colors.removeRange(4, colors.length);
+
+      if (mounted) {
+        setState(() => _paletteColors = colors);
+      }
+    } catch (_) {}
+  }
+
+  /// 简单色差计算，用于去重
+  double _colorDist(Color a, Color b) {
+    final dr = a.red - b.red;
+    final dg = a.green - b.green;
+    final db = a.blue - b.blue;
+    return math.sqrt((dr * dr + dg * dg + db * db).toDouble()) / 255.0;
+  }
 
   String _fmt(Duration d) {
     final m = d.inMinutes;
@@ -68,6 +118,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       );
     }
 
+    if (_extractedFor != song.id) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _extractColor(song.coverPath, song.id);
+      });
+    }
+
     final favorites = ref.watch(favoriteSongsProvider);
     final isFav = favorites.any((s) => s.globalId == song.globalId);
 
@@ -92,14 +148,15 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         },
         child: Transform.translate(
           offset: Offset(0, _dragOffset),
-          child: Container(
-            color: AppColors.bg,
+          child: _PulseBackground(
+            playing: player.isPlaying,
+            colors: _paletteColors,
             child: SafeArea(
               child: Column(
                 children: [
                   // ─── 顶部 ───
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                     child: Column(
                       children: [
                         Container(
@@ -110,7 +167,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                             borderRadius: BorderRadius.circular(2),
                           ),
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 8),
                         Row(
                           children: [
                             CupertinoButton(
@@ -133,7 +190,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                               ),
                             ),
                             const Spacer(),
-                            // ★ 手动切换歌词 / 封面
                             CupertinoButton(
                               padding: EdgeInsets.zero,
                               minSize: 0,
@@ -153,29 +209,28 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     ),
                   ),
 
-                  const Spacer(),
-
-                  // ─── 封面 / 歌词切换区 ───
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32),
-                    child: AspectRatio(
-                      aspectRatio: 1,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        // 点空白处切换视图（点歌词行的 tap 会被内层消费）
-                        onTap: () => setState(() => _showLyric = !_showLyric),
-                        child: _showLyric
-                            ? _buildLyric(player, notifier)
-                            : _buildCover(song.coverPath),
-                      ),
+                  // ─── 封面 / 歌词区 ───
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () =>
+                          setState(() => _showLyric = !_showLyric),
+                      child: _showLyric
+                          ? _buildLyric(player, notifier)
+                          : Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 48, vertical: 12),
+                              child: AspectRatio(
+                                aspectRatio: 1,
+                                child: _buildCover(song.coverPath),
+                              ),
+                            ),
                     ),
                   ),
 
-                  const SizedBox(height: 28),
-
-                  // ─── 标题 ───
+                  // ─── 标题 + 来源 + 歌手 ───
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32),
+                    padding: const EdgeInsets.fromLTRB(32, 8, 32, 4),
                     child: Column(
                       children: [
                         Text(
@@ -191,20 +246,32 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                           ),
                         ),
                         const SizedBox(height: 6),
-                        Text(
-                          song.artist,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: AppColors.muted,
-                          ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            SongSourceBadge(
+                              source: song.source,
+                              showVip: song.isVip,
+                            ),
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: Text(
+                                song.artist,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  color: AppColors.muted,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
                   ),
 
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 16),
 
                   // ─── 进度条 ───
                   Padding(
@@ -251,9 +318,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                             ),
                             const SizedBox(height: 6),
                             Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 2,
-                              ),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 2),
                               child: Row(
                                 children: [
                                   Text(
@@ -374,7 +440,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                                   ? CupertinoIcons.heart_fill
                                   : CupertinoIcons.heart,
                               size: 24,
-                              color: isFav ? AppColors.red : AppColors.text,
+                              color:
+                                  isFav ? AppColors.red : AppColors.text,
                             ),
                           ),
                         ),
@@ -382,7 +449,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     ),
                   ),
 
-                  const Spacer(flex: 2),
+                  const SizedBox(height: 12),
                 ],
               ),
             ),
@@ -392,7 +459,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     );
   }
 
-  // ─── 封面 ───
   Widget _buildCover(String path) {
     return Container(
       decoration: BoxDecoration(
@@ -421,33 +487,179 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     );
   }
 
-  // ─── 歌词 ───
   Widget _buildLyric(PlayerState player, PlayerNotifier notifier) {
-    return Container(
-      decoration: BoxDecoration(
-        color: CupertinoColors.white,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x1A1E2231),
-            blurRadius: 40,
-            offset: Offset(0, 16),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(24),
-        child: LyricView(
-          lyric: player.lyric,
-          currentIndex: player.lyricIndex,
-          onSeek: (d) async {
-            await notifier.seek(d);
-            if (!player.isPlaying) await notifier.togglePlay();
-            HapticFeedback.selectionClick();
-          },
-        ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: LyricView(
+        lyric: player.lyric,
+        currentIndex: player.lyricIndex,
+        anchor: _lyricAnchor,
+        onSeek: (d) async {
+          await notifier.seek(d);
+          if (!player.isPlaying) await notifier.togglePlay();
+          HapticFeedback.selectionClick();
+        },
       ),
     );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// ★ 律动背景层（多色光晕，明显）
+// ═══════════════════════════════════════════════════════════
+class _PulseBackground extends StatefulWidget {
+  final bool playing;
+  final List<Color> colors;
+  final Widget child;
+
+  const _PulseBackground({
+    required this.playing,
+    required this.colors,
+    required this.child,
+  });
+
+  @override
+  State<_PulseBackground> createState() => _PulseBackgroundState();
+}
+
+class _PulseBackgroundState extends State<_PulseBackground>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3200),
+    );
+    if (widget.playing) {
+      _ctrl.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _PulseBackground oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.playing != oldWidget.playing) {
+      if (widget.playing) {
+        _ctrl.repeat(reverse: true);
+      } else {
+        _ctrl.stop();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) {
+        final t = _ctrl.value; // 0 → 1 → 0
+        final colors = widget.colors;
+
+        return Stack(
+          children: [
+            // 底色
+            Container(color: AppColors.bg),
+
+            // ★ 光晕 1（左上，最强）
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: RadialGradient(
+                    center: Alignment(
+                      -0.7 + 0.35 * math.sin(t * 2 * math.pi),
+                      -0.65 + 0.3 * math.cos(t * 2 * math.pi),
+                    ),
+                    radius: 1.15 + 0.35 * t,
+                    colors: [
+                      _c(colors, 0).withValues(alpha: 0.55 + 0.25 * t),
+                      AppColors.bg.withValues(alpha: 0.0),
+                    ],
+                    stops: const [0.0, 1.0],
+                  ),
+                ),
+              ),
+            ),
+
+            // ★ 光晕 2（右下，用另一个颜色）
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: RadialGradient(
+                    center: Alignment(
+                      0.8 - 0.3 * math.cos(t * 2 * math.pi),
+                      0.9 - 0.3 * math.sin(t * 2 * math.pi),
+                    ),
+                    radius: 1.0 + 0.4 * t,
+                    colors: [
+                      _c(colors, 1).withValues(alpha: 0.45 + 0.25 * (1 - t)),
+                      AppColors.bg.withValues(alpha: 0.0),
+                    ],
+                    stops: const [0.0, 1.0],
+                  ),
+                ),
+              ),
+            ),
+
+            // ★ 光晕 3（右上，第三个颜色）
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: RadialGradient(
+                    center: Alignment(
+                      0.7 + 0.2 * math.sin(t * 2 * math.pi + 1.5),
+                      -0.5 + 0.25 * math.cos(t * 2 * math.pi + 1.5),
+                    ),
+                    radius: 0.9 + 0.35 * (1 - t),
+                    colors: [
+                      _c(colors, 2).withValues(alpha: 0.35 + 0.3 * t),
+                      AppColors.bg.withValues(alpha: 0.0),
+                    ],
+                    stops: const [0.0, 1.0],
+                  ),
+                ),
+              ),
+            ),
+
+            // ★ 光晕 4（左下，第四个颜色）
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: RadialGradient(
+                    center: Alignment(
+                      -0.5 + 0.25 * math.cos(t * 2 * math.pi + 3.0),
+                      0.8 + 0.25 * math.sin(t * 2 * math.pi + 3.0),
+                    ),
+                    radius: 0.85 + 0.3 * (1 - t),
+                    colors: [
+                      _c(colors, 3).withValues(alpha: 0.3 + 0.25 * t),
+                      AppColors.bg.withValues(alpha: 0.0),
+                    ],
+                    stops: const [0.0, 1.0],
+                  ),
+                ),
+              ),
+            ),
+
+            // 内容
+            widget.child,
+          ],
+        );
+      },
+    );
+  }
+
+  Color _c(List<Color> list, int i) {
+    if (list.isEmpty) return AppColors.primary;
+    return list[i % list.length];
   }
 }
 
@@ -539,7 +751,8 @@ class _QQSliderState extends State<QQSlider> {
                   ),
                 ),
                 Positioned(
-                  left: (thumbX - thumbSize / 2).clamp(0.0, width - thumbSize),
+                  left: (thumbX - thumbSize / 2)
+                      .clamp(0.0, width - thumbSize),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 150),
                     curve: Curves.easeOut,

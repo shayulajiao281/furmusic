@@ -6,6 +6,7 @@ import '../providers/player_state.dart';
 import '../providers/music_sources.dart';
 import '../services/music_source.dart';
 import '../theme/app_colors.dart';
+import '../utils/play_or_open.dart';
 import '../widgets/song_tile.dart';
 
 class DiscoverPage extends ConsumerStatefulWidget {
@@ -18,18 +19,16 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   final _searchCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
 
-  /// 全部结果（已跨源去重）
   final List<Song> _results = [];
   final Set<String> _seenIds = {};
 
   String _currentKeyword = '';
-  bool _loading = false; // 首搜
-  bool _loadingMore = false; // 上拉加载
+  bool _loading = false;
+  bool _loadingMore = false;
   bool _searched = false;
 
-  /// 每个源的分页状态
-  final Map<String, int> _srcPage = {}; // source.id → 已加载到第几页
-  final Map<String, bool> _srcHasMore = {}; // source.id → 是否还有更多
+  final Map<String, int> _srcPage = {};
+  final Map<String, bool> _srcHasMore = {};
 
   String? _filterSource;
 
@@ -65,7 +64,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     return list;
   }
 
-  /// 当前显示的内容底部是否还需要显示"上拉加载更多"
   bool get _shouldShowFooter {
     if (!_searched) return false;
     if (_filterSource == null) {
@@ -74,9 +72,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     return _srcHasMore[_filterSource] ?? false;
   }
 
-  // ═══════════════════════════════════════════
-  // 首搜：并发拉所有源第 1 页
-  // ═══════════════════════════════════════════
   Future<void> _search() async {
     final kw = _searchCtrl.text.trim();
     if (kw.isEmpty) return;
@@ -99,9 +94,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     setState(() => _loading = false);
   }
 
-  // ═══════════════════════════════════════════
-  // 上拉加载：按当前模式决定拉哪些源
-  // ═══════════════════════════════════════════
   Future<void> _loadMore() async {
     if (_loadingMore || _loading) return;
     if (_currentKeyword.isEmpty) return;
@@ -117,18 +109,15 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
 
     setState(() => _loadingMore = true);
 
-    await Future.wait(
-      targets.map((s) {
-        final next = (_srcPage[s.id] ?? 1) + 1;
-        return _fetchPage(s, next);
-      }),
-    );
+    await Future.wait(targets.map((s) {
+      final next = (_srcPage[s.id] ?? 1) + 1;
+      return _fetchPage(s, next);
+    }));
 
     if (!mounted) return;
     setState(() => _loadingMore = false);
   }
 
-  /// 拉某个源的某一页
   Future<void> _fetchPage(MusicSource source, int page) async {
     try {
       final r = await source.search(_currentKeyword, page: page, pageSize: 20);
@@ -142,20 +131,11 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
         _srcPage[source.id] = page;
         _srcHasMore[source.id] = r.hasMore;
       });
-      print(
-        '📥 [${source.id}] 第 $page 页 → 新增 ${r.songs.length} 条，hasMore=${r.hasMore}',
-      );
+      print('📥 [${source.id}] 第 $page 页 → 新增 ${r.songs.length} 条，hasMore=${r.hasMore}');
     } catch (e) {
       print('❌ [${source.id}] 第 $page 页失败: $e');
       _srcHasMore[source.id] = false;
     }
-  }
-
-  void _playSong(Song song, List<Song> queue) {
-    final notifier = ref.read(playerStateProvider.notifier);
-    final appNotifier = ref.read(appStateProvider.notifier);
-    notifier.playSong(song, queue: queue);
-    appNotifier.addRecent(song);
   }
 
   void _toggleFav(Song song) {
@@ -228,7 +208,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                     Expanded(
                       child: CupertinoTextField(
                         controller: _searchCtrl,
-                        placeholder: '搜索音乐（B站 / 网易 / QQ）',
+                        placeholder: '搜索音乐（B站 / 网易 / QQ / 酷狗）',
                         placeholderStyle: const TextStyle(
                           fontSize: 14,
                           color: Color(0xFFC2C8D6),
@@ -304,15 +284,19 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                         );
                         final displaySong = s.copyWith(isFavorite: isFav);
                         final active = player.current?.globalId == s.globalId;
-                        final isLoadingThis =
-                            player.isLoading &&
-                            player.current?.globalId == s.globalId;
+                        final isLoadingThis = player.isLoading && active;
 
                         return SongTile(
                           song: displaySong,
                           active: active,
                           loading: isLoadingThis,
-                          onTap: () => _playSong(s, results),
+                          // ★ 用 playOrOpen，追加模式
+                          onTap: () => playOrOpen(
+                            context,
+                            ref,
+                            s,
+                            appendToQueue: true,
+                          ),
                           onFavorite: () => _toggleFav(displaySong),
                         );
                       },
