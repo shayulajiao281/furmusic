@@ -93,7 +93,17 @@ class AppStateNotifier extends Notifier<AppState> {
     state = AppState(
       localSongs: state.localSongs,
       favoriteSongs: state.favoriteSongs,
-      recentSongs: list.take(30).toList(),
+      recentSongs: list.take(100).toList(),
+    );
+    _persist();
+  }
+
+  /// 清空播放历史
+  void clearRecent() {
+    state = AppState(
+      localSongs: state.localSongs,
+      favoriteSongs: state.favoriteSongs,
+      recentSongs: [],
     );
     _persist();
   }

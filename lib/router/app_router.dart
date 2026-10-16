@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import '../layout/main_shell.dart';
 import '../pages/music_page.dart';
 import '../pages/discover_page.dart';
+import '../pages/play_history_page.dart';
 import '../pages/profile_page.dart';
 import '../pages/player_page.dart';
 import '../pages/local_music_page.dart'; // ★ 新增
@@ -41,5 +42,6 @@ final appRouter = GoRouter(
     ),
     // ★ 本地音乐页
     GoRoute(path: '/local-music', builder: (_, __) => const LocalMusicPage()),
+    GoRoute(path: '/play-history', builder: (_, __) => const PlayHistoryPage()),
   ],
 );

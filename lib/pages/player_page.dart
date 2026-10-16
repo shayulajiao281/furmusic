@@ -15,6 +15,7 @@ class PlayerPage extends ConsumerStatefulWidget {
 class _PlayerPageState extends ConsumerState<PlayerPage> {
   double _dragOffset = 0.0;
   double _screenHeight = 0;
+  double? _dragProgress;
 
   String _fmt(Duration d) {
     final m = d.inMinutes;
@@ -63,7 +64,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       );
     }
 
-    // ★ 用新的 provider 查收藏状态
     final favorites = ref.watch(favoriteSongsProvider);
     final isFav = favorites.any((s) => s.id == song.id);
 
@@ -93,7 +93,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             child: SafeArea(
               child: Column(
                 children: [
-                  // 顶部 handle + 模式名
+                  // 顶部
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
                     child: Column(
@@ -196,48 +196,81 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     ),
                   ),
 
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 24),
 
-                  // 进度条
+                  // QQ 音乐风格进度条
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
-                    child: Column(
-                      children: [
-                        CupertinoSlider(
-                          value: player.progress.clamp(0.0, 1.0),
-                          activeColor: AppColors.primary,
-                          onChanged: (v) {
-                            final pos = Duration(
-                              milliseconds: (player.duration.inMilliseconds * v)
-                                  .round(),
-                            );
-                            notifier.seek(pos);
-                          },
-                        ),
-                        const SizedBox(height: 4),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          child: Row(
-                            children: [
-                              Text(
-                                _fmt(player.position),
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: AppColors.muted,
-                                ),
+                    child: Builder(
+                      builder: (_) {
+                        final displayProgress =
+                            _dragProgress ?? player.progress.clamp(0.0, 1.0);
+                        final displayPos = _dragProgress != null
+                            ? Duration(
+                                milliseconds:
+                                    (player.duration.inMilliseconds *
+                                            _dragProgress!)
+                                        .round(),
+                              )
+                            : player.position;
+
+                        return Column(
+                          children: [
+                            QQSlider(
+                              value: displayProgress,
+                              onChangeStart: (v) {
+                                setState(() => _dragProgress = v);
+                                HapticFeedback.selectionClick();
+                              },
+                              onChanged: (v) {
+                                setState(() => _dragProgress = v);
+                              },
+                              onChangeEnd: (v) async {
+                                final pos = Duration(
+                                  milliseconds:
+                                      (player.duration.inMilliseconds * v)
+                                          .round(),
+                                );
+                                await notifier.seek(pos);
+                                if (!player.isPlaying) {
+                                  await notifier.togglePlay();
+                                }
+                                if (mounted) {
+                                  setState(() => _dragProgress = null);
+                                }
+                                HapticFeedback.lightImpact();
+                              },
+                            ),
+                            const SizedBox(height: 6),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 2,
                               ),
-                              const Spacer(),
-                              Text(
-                                _fmt(player.duration),
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: AppColors.muted,
-                                ),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    _fmt(displayPos),
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: AppColors.muted,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    _fmt(player.duration),
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: AppColors.muted,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
-                        ),
-                      ],
+                            ),
+                          ],
+                        );
+                      },
                     ),
                   ),
 
@@ -249,7 +282,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        // 模式
                         GestureDetector(
                           onTap: () {
                             HapticFeedback.selectionClick();
@@ -264,7 +296,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                             ),
                           ),
                         ),
-                        // 上一首
                         GestureDetector(
                           onTap: () {
                             HapticFeedback.selectionClick();
@@ -279,7 +310,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                             ),
                           ),
                         ),
-                        // 播放/暂停
                         GestureDetector(
                           onTap: () {
                             HapticFeedback.mediumImpact();
@@ -308,7 +338,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                             ),
                           ),
                         ),
-                        // 下一首
                         GestureDetector(
                           onTap: () {
                             HapticFeedback.selectionClick();
@@ -323,7 +352,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                             ),
                           ),
                         ),
-                        // 收藏
                         GestureDetector(
                           onTap: () {
                             HapticFeedback.selectionClick();
@@ -367,5 +395,139 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       );
     }
     return SongCover(path: path, size: double.infinity, radius: 0);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// QQ 音乐风格进度条
+// ═══════════════════════════════════════════════════════════
+class QQSlider extends StatefulWidget {
+  final double value;
+  final ValueChanged<double>? onChangeStart;
+  final ValueChanged<double>? onChanged;
+  final ValueChanged<double>? onChangeEnd;
+
+  const QQSlider({
+    super.key,
+    required this.value,
+    this.onChangeStart,
+    this.onChanged,
+    this.onChangeEnd,
+  });
+
+  @override
+  State<QQSlider> createState() => _QQSliderState();
+}
+
+class _QQSliderState extends State<QQSlider> {
+  bool _dragging = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+
+        final trackHeight = _dragging ? 5.0 : 3.0;
+        final thumbSize = _dragging ? 16.0 : 12.0;
+
+        final ratio = widget.value.clamp(0.0, 1.0);
+        final thumbX = width * ratio;
+
+        void handleDx(double dx) {
+          final v = (dx / width).clamp(0.0, 1.0);
+          widget.onChanged?.call(v);
+        }
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragStart: (d) {
+            setState(() => _dragging = true);
+            final v = (d.localPosition.dx / width).clamp(0.0, 1.0);
+            widget.onChangeStart?.call(v);
+          },
+          onHorizontalDragUpdate: (d) {
+            handleDx(d.localPosition.dx);
+          },
+          onHorizontalDragEnd: (d) {
+            widget.onChangeEnd?.call(widget.value);
+            setState(() => _dragging = false);
+          },
+          onHorizontalDragCancel: () {
+            setState(() => _dragging = false);
+          },
+          onTapDown: (d) {
+            final v = (d.localPosition.dx / width).clamp(0.0, 1.0);
+            widget.onChangeStart?.call(v);
+            widget.onChanged?.call(v);
+            widget.onChangeEnd?.call(v);
+          },
+          child: SizedBox(
+            height: 28,
+            width: width,
+            child: Stack(
+              alignment: Alignment.centerLeft,
+              children: [
+                // 底轨（灰色）
+                Container(
+                  height: trackHeight,
+                  width: width,
+                  decoration: BoxDecoration(
+                    color: AppColors.line,
+                    borderRadius: BorderRadius.circular(trackHeight / 2),
+                  ),
+                ),
+                // 已播进度（主题色）
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 100),
+                  height: trackHeight,
+                  width: thumbX,
+                  decoration: BoxDecoration(
+                    color: AppColors.primary,
+                    borderRadius: BorderRadius.circular(trackHeight / 2),
+                  ),
+                ),
+                // 圆点
+                Positioned(
+                  left: (thumbX - thumbSize / 2).clamp(0.0, width - thumbSize),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    curve: Curves.easeOut,
+                    width: thumbSize,
+                    height: thumbSize,
+                    decoration: BoxDecoration(
+                      color: CupertinoColors.white,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: AppColors.primary,
+                        width: _dragging ? 3 : 2.5,
+                      ),
+                      boxShadow: _dragging
+                          ? [
+                              BoxShadow(
+                                // ★ withOpacity → withValues
+                                color: AppColors.primary.withValues(
+                                  alpha: 0.35,
+                                ),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ]
+                          : [
+                              const BoxShadow(
+                                color: Color(0x1A000000),
+                                blurRadius: 4,
+                                offset: Offset(0, 1),
+                              ),
+                            ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 }

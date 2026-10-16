@@ -7,6 +7,7 @@ import 'song_cover.dart';
 class SongTile extends StatelessWidget {
   final Song song;
   final bool active;
+  final bool loading;
   final VoidCallback onTap;
   final VoidCallback? onFavorite;
 
@@ -14,6 +15,7 @@ class SongTile extends StatelessWidget {
     super.key,
     required this.song,
     this.active = false,
+    this.loading = false,
     required this.onTap,
     this.onFavorite,
   });
@@ -28,6 +30,7 @@ class SongTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
+      // ★ 加载中也能点（切别的歌）
       onTap: () {
         HapticFeedback.selectionClick();
         onTap();
@@ -72,8 +75,17 @@ class SongTile extends StatelessWidget {
                 ],
               ),
             ),
-            // ★ 收藏按钮
-            if (onFavorite != null)
+            // 加载中：转圈
+            if (loading)
+              const Padding(
+                padding: EdgeInsets.all(8),
+                child: CupertinoActivityIndicator(
+                  radius: 8,
+                  color: AppColors.primary,
+                ),
+              )
+            // 非加载：收藏按钮
+            else if (onFavorite != null)
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () {

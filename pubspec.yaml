@@ -21,6 +21,7 @@ dependencies:
   http: ^1.6.0
   bilibili_api: ^0.0.1
   crypto: ^3.0.7
+  palette_generator: ^0.3.3+7
 
 dev_dependencies:
   flutter_test:

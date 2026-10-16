@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'providers/app_state.dart';
 import 'router/app_router.dart';
 import 'theme/app_colors.dart';
+import 'services/audio_cache.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,6 +16,10 @@ Future<void> main() async {
     androidNotificationChannelName: 'FurKid Music',
     androidNotificationOngoing: true,
   );
+
+  // 预热缓存目录 + 清理超量
+  await AudioCache.size();
+  AudioCache.trim().catchError((_) {});
 
   final prefs = await SharedPreferences.getInstance();
 

@@ -79,6 +79,19 @@ const _mixinKeyEncTab = [
   52,
 ];
 
+/// 搜索结果
+class SearchResult {
+  final List<Song> songs;
+  final int page;
+  final bool hasMore;
+
+  const SearchResult({
+    required this.songs,
+    required this.page,
+    required this.hasMore,
+  });
+}
+
 class MusicApi {
   static String? _imgKey;
   static String? _subKey;
@@ -92,7 +105,7 @@ class MusicApi {
   };
 
   // ═══════════════════════════════════════════
-  // WBI 签名 + Cookie 获取
+  // WBI 签名 + Cookie
   // ═══════════════════════════════════════════
   static Future<void> _ensureWbi() async {
     if (_imgKey != null && _subKey != null) return;
@@ -112,12 +125,14 @@ class MusicApi {
             .where((s) => s.isNotEmpty)
             .join('; ');
       }
+
       final json = jsonDecode(utf8.decode(res.bodyBytes));
       final wbiImg = json['data']?['wbi_img'];
       if (wbiImg == null) {
         print('⚠️ nav 未返回 wbi_img');
         return;
       }
+
       _imgKey = (wbiImg['img_url'] as String).split('/').last.split('.').first;
       _subKey = (wbiImg['sub_url'] as String).split('/').last.split('.').first;
       print('✅ WBI 密钥获取成功 (cookies: ${_cookies.length} 字符)');
@@ -158,34 +173,51 @@ class MusicApi {
   };
 
   // ═══════════════════════════════════════════
-  // 搜索
+  // 搜索（支持分页）
   // ═══════════════════════════════════════════
-  static Future<List<Song>> search(String keyword) async {
-    if (keyword.trim().isEmpty) return [];
+  /// [page] 从 1 开始
+  static Future<SearchResult> search(
+    String keyword, {
+    int page = 1,
+    int pageSize = 20,
+  }) async {
+    if (keyword.trim().isEmpty) {
+      return SearchResult(songs: [], page: page, hasMore: false);
+    }
 
     await _ensureWbi();
-    if (_imgKey == null) return [];
+    if (_imgKey == null) {
+      return SearchResult(songs: [], page: page, hasMore: false);
+    }
 
     try {
       final params = <String, String>{
         'search_type': 'video',
         'keyword': keyword,
-        'page': '1',
-        'page_size': '30',
+        'page': page.toString(),
+        'page_size': pageSize.toString(),
       };
       _signParams(params);
+
       final uri = Uri.parse(_searchUrl).replace(queryParameters: params);
       final res = await http
           .get(uri, headers: _headers())
           .timeout(const Duration(seconds: 15));
+
       final json = jsonDecode(utf8.decode(res.bodyBytes));
       if (json['code'] != 0) {
         print('❌ 搜索失败: ${json['message']} (code: ${json['code']})');
-        return [];
+        return SearchResult(songs: [], page: page, hasMore: false);
       }
-      final results = json['data']?['result'] as List? ?? [];
-      print('📋 搜索到 ${results.length} 条结果');
-      return results
+
+      final data = json['data'];
+      final results = data?['result'] as List? ?? [];
+      final numPages = data?['numPages'] as int? ?? 1;
+      final numResults = data?['numResults'] as int? ?? 0;
+
+      print('📋 第 $page 页：${results.length} 条 / 共 $numPages 页 $numResults 条');
+
+      final songs = results
           .where((item) => item['type'] == 'video')
           .map((item) {
             return Song(
@@ -200,14 +232,16 @@ class MusicApi {
           })
           .where((s) => s.id.isNotEmpty)
           .toList();
+
+      return SearchResult(songs: songs, page: page, hasMore: page < numPages);
     } catch (e) {
       print('❌ 搜索异常: $e');
-      return [];
+      return SearchResult(songs: [], page: page, hasMore: false);
     }
   }
 
   // ═══════════════════════════════════════════
-  // 获取音频流
+  // 解析音频流
   // ═══════════════════════════════════════════
   static Future<String?> getSongUrl(String bvid) async {
     await _ensureWbi();
@@ -292,12 +326,10 @@ class MusicApi {
   // ═══════════════════════════════════════════
   // 获取字幕/歌词
   // ═══════════════════════════════════════════
-  /// 返回 List<(秒, 文本)>
   static Future<List<MapEntry<double, String>>> getLyric(String bvid) async {
     await _ensureWbi();
 
     try {
-      // ① 拿 aid + cid
       final viewRes = await http
           .get(Uri.parse('$_viewUrl?bvid=$bvid'), headers: _headers())
           .timeout(const Duration(seconds: 10));
@@ -308,7 +340,6 @@ class MusicApi {
       final cid = viewJson['data']?['cid'];
       if (aid == null || cid == null) return [];
 
-      // ② 请求字幕列表
       final params = <String, String>{
         'aid': aid.toString(),
         'cid': cid.toString(),
@@ -327,12 +358,10 @@ class MusicApi {
         return [];
       }
 
-      // ③ 取第一个字幕的 URL
       String? subUrl = subtitles[0]['subtitle_url']?.toString();
       if (subUrl == null || subUrl.isEmpty) return [];
       if (subUrl.startsWith('//')) subUrl = 'https:$subUrl';
 
-      // ④ 下载字幕 JSON
       final subRes = await http
           .get(Uri.parse(subUrl), headers: _headers())
           .timeout(const Duration(seconds: 10));
@@ -384,7 +413,6 @@ class MusicApi {
     return url;
   }
 
-  /// 兼容：秒数(int) / "mm:ss" / "hh:mm:ss"
   static Duration _parseDuration(dynamic raw) {
     if (raw == null) return Duration.zero;
     if (raw is int) return Duration(seconds: raw);
