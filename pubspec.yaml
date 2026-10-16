@@ -23,6 +23,9 @@ dependencies:
   crypto: ^3.0.7
   palette_generator: ^0.3.3+7
   flutter_inappwebview: ^6.1.5
+  # ★ 新增：设备指纹
+  device_info_plus: ^11.3.0
+  uuid: ^4.5.1
 
 dev_dependencies:
   flutter_test:
@@ -38,7 +41,7 @@ dependency_overrides:
   permission_handler_android: 13.0.1
 
 # ═══════════════════════════════════════════
-# ★ 新增：App 图标配置
+# App 图标
 # ═══════════════════════════════════════════
 flutter_launcher_icons:
   android: true
@@ -49,22 +52,18 @@ flutter_launcher_icons:
   remove_alpha_ios: true
 
 # ═══════════════════════════════════════════
-# ★ 新增：启动画面配置
+# 启动画面
 # ═══════════════════════════════════════════
 flutter_native_splash:
   color: "#F4F5F9"
   image: assets/splash.jpeg
   color_dark: "#1E2231"
   image_dark: assets/splash.jpeg
-
-  # ★ 让图片铺满屏幕
-  android_gravity: fill              # Android：拉伸铺满
-  ios_content_mode: scaleAspectFill  # iOS：等比铺满 + 裁剪
-
+  android_gravity: fill
+  ios_content_mode: scaleAspectFill
   android_12:
     image: assets/splash.jpeg
     color: "#F4F5F9"
     icon_background_color: "#FF7A59"
-    android_gravity: fill            # Android 12+ 也要加
-
+    android_gravity: fill
   fullscreen: true

@@ -28,6 +28,37 @@ class _LoginWebviewPageState extends ConsumerState<LoginWebviewPage> {
   bool _loading = true;
   bool _checking = false;
 
+  /// 移动端 UA
+  static const _mobileUA =
+      'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
+  /// 桌面端 UA
+  static const _desktopUA =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+  /// ★ 按 source 决定用哪个 UA
+  /// QQ 音乐 / 酷狗 用桌面版 UA，才有明显的登录入口
+  String get _userAgent {
+    switch (widget.source) {
+      case 'qq':
+      case 'kugou':
+        return _desktopUA;
+      default:
+        return _mobileUA;
+    }
+  }
+
+  /// ★ 是否要桌面布局
+  UserPreferredContentMode get _contentMode {
+    switch (widget.source) {
+      case 'qq':
+      case 'kugou':
+        return UserPreferredContentMode.DESKTOP;
+      default:
+        return UserPreferredContentMode.RECOMMENDED;
+    }
+  }
+
   Future<void> _checkLogin() async {
     if (_checking) return;
     _checking = true;
@@ -108,8 +139,18 @@ class _LoginWebviewPageState extends ConsumerState<LoginWebviewPage> {
               sharedCookiesEnabled: true,
               thirdPartyCookiesEnabled: true,
               useShouldOverrideUrlLoading: false,
-              userAgent:
-                  'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+              // ★ 按 source 决定 UA
+              userAgent: _userAgent,
+              // ★ 强制桌面/移动布局
+              preferredContentMode: _contentMode,
+              // ★ 允许缩放（桌面版在手机上看得清）
+              supportZoom: true,
+              builtInZoomControls: true,
+              displayZoomControls: false,
+              // ★ 桌面版需要的其他设置
+              useHybridComposition: true,
+              allowsInlineMediaPlayback: true,
+              mediaPlaybackRequiresUserGesture: false,
             ),
             onLoadStart: (_, __) {
               if (mounted) setState(() => _loading = true);

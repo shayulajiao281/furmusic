@@ -47,15 +47,17 @@ const _platforms = [
     name: 'QQ音乐',
     icon: CupertinoIcons.music_albums_fill,
     color: Color(0xFF31C27C),
+    // ★ QQ 音乐直接打开 y.qq.com，用户自己点"登录"
     loginUrl: 'https://y.qq.com/',
     cookieUrl: 'https://y.qq.com',
-    requiredKeys: ['qm_keyst'],
+    requiredKeys: ['qm_keyst', 'uin'],
   ),
   _Platform(
     id: 'kugou',
     name: '酷狗音乐',
     icon: CupertinoIcons.headphones,
     color: Color(0xFF2CA2F9),
+    // ★ 酷狗直接打开登录页
     loginUrl: 'https://www.kugou.com/',
     cookieUrl: 'https://www.kugou.com',
     requiredKeys: ['token'],

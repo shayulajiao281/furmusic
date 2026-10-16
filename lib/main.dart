@@ -7,6 +7,7 @@ import 'router/app_router.dart';
 import 'theme/app_colors.dart';
 import 'services/audio_cache.dart';
 import 'services/auth_store.dart';
+import 'services/device_fingerprint.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,8 +23,11 @@ Future<void> main() async {
 
   final prefs = await SharedPreferences.getInstance();
 
-  // ★ 把 prefs 挂给 AuthStore
+  // 把 prefs 挂给 AuthStore
   AuthStore.attach(prefs);
+
+  // ★ 初始化设备指纹（持久化 guid / qimei）
+  await DeviceFingerprint.init();
 
   runApp(
     ProviderScope(
