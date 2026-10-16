@@ -1,12 +1,27 @@
+import 'dart:math' as math;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:palette_generator/palette_generator.dart';
+import '../models/song.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
 import '../theme/app_colors.dart';
 import 'playlist_sheet.dart';
 import 'song_cover.dart';
+
+/// 悬浮条展开状态
+class MiniPlayerExpandedNotifier extends Notifier<bool> {
+  @override
+  bool build() => true;
+  void expand() => state = true;
+  void collapse() => state = false;
+}
+
+final miniPlayerExpandedProvider =
+    NotifierProvider<MiniPlayerExpandedNotifier, bool>(
+      MiniPlayerExpandedNotifier.new,
+    );
 
 class MiniPlayer extends ConsumerStatefulWidget {
   const MiniPlayer({super.key});
@@ -15,18 +30,21 @@ class MiniPlayer extends ConsumerStatefulWidget {
 }
 
 class _MiniPlayerState extends ConsumerState<MiniPlayer> {
-  /// 封面主色调
+  /// ★ 所有动画统一时长 + 曲线
+  static const _duration = Duration(milliseconds: 320);
+  static const _curve = Curves.easeInOutCubic;
+
+  /// 第一行固定高度（展开/收缩都一样）
+  static const double _rowHeight = 56;
+
   Color _dominantColor = AppColors.primary;
-
-  /// 已提取过色调的歌曲 id（避免重复计算）
   String? _extractedFor;
+  double? _dragProgress;
 
-  /// 提取封面主色调
   Future<void> _extractColor(String coverUrl, String songId) async {
     if (coverUrl.isEmpty) return;
     if (_extractedFor == songId) return;
     _extractedFor = songId;
-
     try {
       final palette = await PaletteGenerator.fromImageProvider(
         NetworkImage(coverUrl),
@@ -40,141 +58,625 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
         setState(() => _dominantColor = color);
       }
     } catch (_) {
-      // 提取失败就用默认色
-      if (mounted) {
-        setState(() => _dominantColor = AppColors.primary);
-      }
+      if (mounted) setState(() => _dominantColor = AppColors.primary);
     }
   }
 
-  /// 把颜色调暗一些，避免太亮刺眼
-  Color _darken(Color c, [double amount = 0.15]) {
+  Color _shift(Color c, double dL, [double satMul = 1.0]) {
     final hsl = HSLColor.fromColor(c);
     return hsl
-        .withLightness((hsl.lightness - amount).clamp(0.0, 1.0))
-        .withSaturation((hsl.saturation * 0.9).clamp(0.0, 1.0))
+        .withLightness((hsl.lightness + dL).clamp(0.0, 1.0))
+        .withSaturation((hsl.saturation * satMul).clamp(0.0, 1.0))
         .toColor();
+  }
+
+  String _fmt(Duration d) {
+    final m = d.inMinutes;
+    final s = d.inSeconds % 60;
+    return '$m:${s.toString().padLeft(2, '0')}';
   }
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(playerStateProvider.select((s) => s.current?.id), (prev, next) {
+      if (prev != next && next != null) {
+        ref.read(miniPlayerExpandedProvider.notifier).expand();
+      }
+    });
+
     final player = ref.watch(playerStateProvider);
     final song = player.current;
+    final expanded = ref.watch(miniPlayerExpandedProvider);
 
+    // ★ 没歌 → 显示空态简略条
+    // if (song == null) return _buildEmpty();
     if (song == null) return const SizedBox.shrink();
 
-    // 切歌时提取主色调
+    final favorites = ref.watch(favoriteSongsProvider);
+    final isFav = favorites.any((s) => s.id == song.id);
+    final notifier = ref.read(playerStateProvider.notifier);
+    final loading = player.isLoading;
+
     if (_extractedFor != song.id) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _extractColor(song.coverPath, song.id);
       });
     }
 
-    final favorites = ref.watch(favoriteSongsProvider);
-    final isFav = favorites.any((s) => s.id == song.id);
-    final notifier = ref.read(playerStateProvider.notifier);
+    // 展开亮一点，收缩深一点（平滑过渡由 AnimatedContainer 处理）
+    final baseColor = _shift(_dominantColor, expanded ? 0.18 : -0.06, 0.92);
+    final endColor = _shift(_dominantColor, expanded ? 0.30 : -0.22, 0.88);
 
-    final baseColor = _darken(_dominantColor, 0.12);
-    final darkColor = _darken(_dominantColor, 0.28);
+    final radius = expanded
+        ? BorderRadius.circular(22)
+        : const BorderRadius.vertical(top: Radius.circular(14));
 
-    return GestureDetector(
-      onTap: () => context.push('/player'),
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [baseColor, darkColor],
-          ),
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-          boxShadow: [
-            BoxShadow(
-              color: darkColor.withValues(alpha: 0.35),
-              blurRadius: 16,
-              offset: const Offset(0, -2),
-            ),
-          ],
+    return AnimatedContainer(
+      duration: _duration,
+      curve: _curve,
+      margin: expanded
+          ? const EdgeInsets.fromLTRB(10, 0, 10, 8)
+          : EdgeInsets.zero,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [baseColor, endColor],
         ),
-        child: Row(
+        borderRadius: radius,
+        boxShadow: [
+          BoxShadow(
+            color: endColor.withValues(alpha: expanded ? 0.35 : 0.18),
+            blurRadius: 20,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: radius,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            SongCover(path: song.coverPath, size: 40, radius: 10),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    song.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w600,
-                      color: CupertinoColors.white,
-                      height: 1.2,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    song.artist,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: CupertinoColors.white.withValues(alpha: 0.85),
-                      height: 1.2,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            // 收藏
-            GestureDetector(
-              onTap: () =>
-                  ref.read(appStateProvider.notifier).toggleFavorite(song),
+            // ═══ 第一行（永远显示，高度固定）═══
+            SizedBox(
+              height: _rowHeight,
               child: Padding(
-                padding: const EdgeInsets.all(6),
-                child: Icon(
-                  isFav ? CupertinoIcons.heart_fill : CupertinoIcons.heart,
-                  size: 20,
-                  color: isFav
-                      ? const Color(0xFFFF4D4F)
-                      : CupertinoColors.white.withValues(alpha: 0.9),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    SongCover(path: song.coverPath, size: 40, radius: 10),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: loading ? null : () => context.push('/player'),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              song.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w600,
+                                color: expanded
+                                    ? _shift(_dominantColor, -0.45, 0.7)
+                                    : CupertinoColors.white,
+                                height: 1.2,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              loading ? '正在加载…' : song.artist,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: expanded
+                                    ? _shift(
+                                        _dominantColor,
+                                        -0.45,
+                                        0.7,
+                                      ).withValues(alpha: 0.6)
+                                    : CupertinoColors.white.withValues(
+                                        alpha: 0.85,
+                                      ),
+                                height: 1.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    // 右侧：宽度固定，内容切换（不影响高度）
+                    SizedBox(
+                      width: 96,
+                      child: AnimatedSwitcher(
+                        duration: _duration,
+                        switchInCurve: _curve,
+                        switchOutCurve: _curve,
+                        transitionBuilder: (child, animation) =>
+                            FadeTransition(opacity: animation, child: child),
+                        child: expanded
+                            ? Row(
+                                key: const ValueKey('collapse'),
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: () => ref
+                                        .read(
+                                          miniPlayerExpandedProvider.notifier,
+                                        )
+                                        .collapse(),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(6),
+                                      child: Icon(
+                                        CupertinoIcons.chevron_down,
+                                        size: 22,
+                                        color: _shift(
+                                          _dominantColor,
+                                          -0.45,
+                                          0.7,
+                                        ).withValues(alpha: 0.85),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : Row(
+                                key: const ValueKey('actions'),
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  _smallPlayButton(loading, player, notifier),
+                                  _smallIconBtn(
+                                    icon: CupertinoIcons.list_bullet,
+                                    enabled: !loading,
+                                    onTap: () => showPlaylistSheet(context),
+                                  ),
+                                ],
+                              ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-            // 播放/暂停
-            GestureDetector(
-              onTap: notifier.togglePlay,
-              child: Padding(
-                padding: const EdgeInsets.all(6),
-                child: Icon(
-                  player.isPlaying
-                      ? CupertinoIcons.pause_fill
-                      : CupertinoIcons.play_fill,
-                  size: 26,
-                  color: CupertinoColors.white,
-                ),
-              ),
-            ),
-            // ★ 播放列表（替代原来的下一首）
-            GestureDetector(
-              onTap: () => showPlaylistSheet(context),
-              child: Padding(
-                padding: const EdgeInsets.all(6),
-                child: Icon(
-                  CupertinoIcons.list_bullet,
-                  size: 22,
-                  color: CupertinoColors.white.withValues(alpha: 0.95),
+
+            // ═══ 展开面板（heightFactor: 1 → 0，平滑卷起）═══
+            ClipRect(
+              child: AnimatedAlign(
+                duration: _duration,
+                curve: _curve,
+                alignment: Alignment.topCenter,
+                heightFactor: expanded ? 1.0 : 0.0,
+                child: AnimatedOpacity(
+                  duration: _duration,
+                  curve: _curve,
+                  opacity: expanded ? 1.0 : 0.0,
+                  child: _buildExpandedPanel(
+                    song: song,
+                    player: player,
+                    notifier: notifier,
+                    isFav: isFav,
+                    loading: loading,
+                  ),
                 ),
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  // ═══════════════════════════════════════════
+  // 展开面板：进度条 + 时间 + 心/上/播/下/列表
+  // ═══════════════════════════════════════════
+  Widget _buildExpandedPanel({
+    required Song song,
+    required PlayerState player,
+    required PlayerNotifier notifier,
+    required bool isFav,
+    required bool loading,
+  }) {
+    final textColor = _shift(_dominantColor, -0.45, 0.7);
+    final subColor = textColor.withValues(alpha: 0.6);
+
+    final displayProgress = _dragProgress ?? player.progress.clamp(0.0, 1.0);
+    final displayPos = _dragProgress != null
+        ? Duration(
+            milliseconds: (player.duration.inMilliseconds * _dragProgress!)
+                .round(),
+          )
+        : player.position;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _progressBar(
+            value: displayProgress,
+            color: textColor,
+            enabled: !loading && player.duration > Duration.zero,
+            onStart: (v) => setState(() => _dragProgress = v),
+            onUpdate: (v) => setState(() => _dragProgress = v),
+            onEnd: (v) async {
+              final pos = Duration(
+                milliseconds: (player.duration.inMilliseconds * v).round(),
+              );
+              await notifier.seek(pos);
+              if (!player.isPlaying) await notifier.togglePlay();
+              if (mounted) setState(() => _dragProgress = null);
+            },
+          ),
+          const SizedBox(height: 2),
+          Row(
+            children: [
+              Text(
+                _fmt(displayPos),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: subColor,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                _fmt(player.duration),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: subColor,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              _bigIconBtn(
+                icon: isFav ? CupertinoIcons.heart_fill : CupertinoIcons.heart,
+                color: isFav ? AppColors.red : textColor,
+                enabled: !loading,
+                onTap: () =>
+                    ref.read(appStateProvider.notifier).toggleFavorite(song),
+              ),
+              _bigIconBtn(
+                icon: CupertinoIcons.backward_fill,
+                color: textColor,
+                enabled: !loading,
+                onTap: notifier.previous,
+              ),
+              _bigPlayButton(loading, player, notifier, textColor),
+              _bigIconBtn(
+                icon: CupertinoIcons.forward_fill,
+                color: textColor,
+                enabled: !loading,
+                onTap: notifier.next,
+              ),
+              _bigIconBtn(
+                icon: CupertinoIcons.list_bullet,
+                color: textColor,
+                enabled: !loading,
+                onTap: () => showPlaylistSheet(context),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════
+  // 空态：没在播放时的简略条
+  // ═══════════════════════════════════════════
+  Widget _buildEmpty() {
+    return Container(
+      height: _rowHeight,
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE9EBF2),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF4F5F9),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                CupertinoIcons.music_note,
+                size: 20,
+                color: AppColors.muted,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text(
+                '未在播放',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.muted,
+                  height: 1.2,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(6),
+              child: Icon(
+                CupertinoIcons.play_fill,
+                size: 24,
+                color: AppColors.muted.withValues(alpha: 0.4),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(6),
+              child: Icon(
+                CupertinoIcons.list_bullet,
+                size: 22,
+                color: AppColors.muted.withValues(alpha: 0.6),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ─── 进度条 ───
+  Widget _progressBar({
+    required double value,
+    required Color color,
+    required bool enabled,
+    required ValueChanged<double> onStart,
+    required ValueChanged<double> onUpdate,
+    required ValueChanged<double> onEnd,
+  }) {
+    return LayoutBuilder(
+      builder: (context, c) {
+        final width = c.maxWidth;
+        final ratio = value.clamp(0.0, 1.0);
+        final thumbX = width * ratio;
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: enabled
+              ? (d) {
+                  final v = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                  onStart(v);
+                  onUpdate(v);
+                  onEnd(v);
+                }
+              : null,
+          onHorizontalDragStart: enabled
+              ? (d) {
+                  final v = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                  onStart(v);
+                }
+              : null,
+          onHorizontalDragUpdate: enabled
+              ? (d) {
+                  final v = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                  onUpdate(v);
+                }
+              : null,
+          onHorizontalDragEnd: enabled ? (_) => onEnd(value) : null,
+          child: SizedBox(
+            height: 20,
+            child: Stack(
+              alignment: Alignment.centerLeft,
+              children: [
+                Container(
+                  height: 3,
+                  width: width,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Container(
+                  height: 3,
+                  width: thumbX,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Positioned(
+                  left: (thumbX - 6).clamp(0.0, width - 12),
+                  child: Container(
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: color.withValues(alpha: 0.35),
+                          blurRadius: 6,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // ─── 大按钮 ───
+  Widget _bigIconBtn({
+    required IconData icon,
+    required Color color,
+    required bool enabled,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: enabled ? onTap : null,
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: Icon(icon, size: 24, color: color),
+      ),
+    );
+  }
+
+  Widget _bigPlayButton(
+    bool loading,
+    PlayerState player,
+    PlayerNotifier notifier,
+    Color color,
+  ) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: loading ? null : notifier.togglePlay,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: color, width: 2),
+        ),
+        child: Center(
+          child: loading
+              ? _LoadingBars(size: 18, color: color)
+              : Icon(
+                  player.isPlaying
+                      ? CupertinoIcons.pause_fill
+                      : CupertinoIcons.play_fill,
+                  size: 24,
+                  color: color,
+                ),
+        ),
+      ),
+    );
+  }
+
+  // ─── 小条按钮 ───
+  Widget _smallIconBtn({
+    required IconData icon,
+    required bool enabled,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: enabled ? onTap : null,
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Icon(
+          icon,
+          size: 22,
+          color: CupertinoColors.white.withValues(alpha: 0.95),
+        ),
+      ),
+    );
+  }
+
+  Widget _smallPlayButton(
+    bool loading,
+    PlayerState player,
+    PlayerNotifier notifier,
+  ) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: loading ? null : notifier.togglePlay,
+      child: SizedBox(
+        width: 36,
+        height: 36,
+        child: Center(
+          child: loading
+              ? const _LoadingBars(size: 18, color: CupertinoColors.white)
+              : Icon(
+                  player.isPlaying
+                      ? CupertinoIcons.pause_fill
+                      : CupertinoIcons.play_fill,
+                  size: 26,
+                  color: CupertinoColors.white,
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+/// QQ 音乐式"律动"加载：三条竖线上下跳动
+class _LoadingBars extends StatefulWidget {
+  final double size;
+  final Color color;
+
+  const _LoadingBars({required this.size, required this.color});
+
+  @override
+  State<_LoadingBars> createState() => _LoadingBarsState();
+}
+
+class _LoadingBarsState extends State<_LoadingBars>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const barCount = 3;
+    const barWidth = 3.0;
+    const gap = 3.0;
+
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: List.generate(barCount, (i) {
+            final phase = i / barCount;
+            final t = (_ctrl.value + phase) % 1.0;
+            final amp = 0.25 + 0.75 * (0.5 - 0.5 * math.cos(t * 2 * math.pi));
+            return Padding(
+              padding: EdgeInsets.only(right: i == barCount - 1 ? 0 : gap),
+              child: Container(
+                width: barWidth,
+                height: widget.size * amp,
+                decoration: BoxDecoration(
+                  color: widget.color,
+                  borderRadius: BorderRadius.circular(barWidth / 2),
+                ),
+              ),
+            );
+          }),
+        );
+      },
     );
   }
 }

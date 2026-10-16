@@ -1,61 +1,54 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../providers/player_state.dart';
 import '../theme/app_colors.dart';
 import '../widgets/mini_player.dart';
 
-class MainShell extends StatelessWidget {
+class MainShell extends ConsumerWidget {
   final StatefulNavigationShell navigationShell;
 
   const MainShell({super.key, required this.navigationShell});
 
-  @override
-  Widget build(BuildContext context) {
-    final bottom = MediaQuery.of(context).padding.bottom;
+  /// 有歌时给 mini player 留的高度（收缩态固定 56）
+  static const double _miniHeight = 56;
 
-    // ★ 关键：去掉 viewInsets.bottom，键盘弹起时导航栏不动
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bottom = MediaQuery.of(context).padding.bottom;
+    final tabbarHeight = 76.0 + bottom;
+
+    // ★ 有正在播放 / 暂停的歌 → 留 mini 高度；否则只留 tabbar
+    final hasSong = ref.watch(
+      playerStateProvider.select((s) => s.current != null),
+    );
+    final contentBottomPadding = tabbarHeight + (hasSong ? _miniHeight : 0);
+
     return MediaQuery.removeViewInsets(
       context: context,
       removeBottom: true,
       child: CupertinoPageScaffold(
-        child: Column(
+        child: Stack(
           children: [
-            Expanded(child: navigationShell),
-            const MiniPlayer(),
-            // ─── Tabbar：76px + 安全区，对齐 FurKid ───
-            Container(
-              height: 76 + bottom,
-              padding: EdgeInsets.only(bottom: bottom),
-              decoration: const BoxDecoration(
-                color: Color(0xF0FFFFFF),
-                border: Border(
-                  top: BorderSide(color: Color(0x12141928), width: 1),
+            Positioned.fill(
+              child: Padding(
+                padding: EdgeInsets.only(bottom: contentBottomPadding),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: () =>
+                      ref.read(miniPlayerExpandedProvider.notifier).collapse(),
+                  child: navigationShell,
                 ),
               ),
-              child: Row(
-                children: [
-                  _tab(
-                    context,
-                    0,
-                    CupertinoIcons.music_note,
-                    CupertinoIcons.music_note,
-                    '音乐',
-                  ),
-                  _tab(
-                    context,
-                    1,
-                    CupertinoIcons.compass,
-                    CupertinoIcons.compass_fill,
-                    '发现',
-                  ),
-                  _tab(
-                    context,
-                    2,
-                    CupertinoIcons.person,
-                    CupertinoIcons.person_fill,
-                    '我的',
-                  ),
-                ],
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [const MiniPlayer(), _buildTabbar(ref, bottom)],
               ),
             ),
           ],
@@ -64,8 +57,38 @@ class MainShell extends StatelessWidget {
     );
   }
 
+  Widget _buildTabbar(WidgetRef ref, double bottom) {
+    return Container(
+      height: 76 + bottom,
+      padding: EdgeInsets.only(bottom: bottom),
+      decoration: const BoxDecoration(
+        color: Color(0x00000000),
+        border: Border(top: BorderSide(color: Color(0x0F141928), width: 1)),
+      ),
+      child: Row(
+        children: [
+          _tab(
+            ref,
+            0,
+            CupertinoIcons.music_note,
+            CupertinoIcons.music_note,
+            '音乐',
+          ),
+          _tab(
+            ref,
+            1,
+            CupertinoIcons.compass,
+            CupertinoIcons.compass_fill,
+            '发现',
+          ),
+          _tab(ref, 2, CupertinoIcons.person, CupertinoIcons.person_fill, '我的'),
+        ],
+      ),
+    );
+  }
+
   Widget _tab(
-    BuildContext context,
+    WidgetRef ref,
     int index,
     IconData icon,
     IconData activeIcon,
@@ -77,6 +100,7 @@ class MainShell extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         onTap: () {
           HapticFeedback.selectionClick();
+          ref.read(miniPlayerExpandedProvider.notifier).collapse();
           navigationShell.goBranch(
             index,
             initialLocation: index == navigationShell.currentIndex,
