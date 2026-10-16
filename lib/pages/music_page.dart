@@ -119,7 +119,9 @@ class _MusicPageState extends ConsumerState<MusicPage> {
 
     final netease = ref.read(sourceByIdProvider)('netease');
     final qq = ref.read(sourceByIdProvider)('qq');
+    final soda = ref.read(sourceByIdProvider)('soda');
 
+    // ★ 三个源并发；单源失败不影响其他
     final results = await Future.wait<List<Song>>([
       netease
           .search(kw, page: page, pageSize: 30)
@@ -134,23 +136,32 @@ class _MusicPageState extends ConsumerState<MusicPage> {
         print('❌ [推荐] QQ搜索 "$kw" 失败: $e');
         return <Song>[];
       }),
+      soda.search(kw, page: page, pageSize: 30).then((r) => r.songs).catchError(
+        (e) {
+          print('❌ [推荐] 抖音搜索 "$kw" 失败: $e');
+          return <Song>[];
+        },
+      ),
     ]);
 
     final neSongs = results[0];
     final qqSongs = results[1];
+    final sodaSongs = results[2];
 
     print(
-      '📋 [推荐:$categoryId] "$kw" → 网易 ${neSongs.length} 条 / QQ ${qqSongs.length} 条',
+      '📋 [推荐:$categoryId] "$kw" → 网易 ${neSongs.length} / QQ ${qqSongs.length} / 抖音 ${sodaSongs.length}',
     );
 
+    // ★ 三源交替混合：ne[0], qq[0], soda[0], ne[1], qq[1], soda[1]...
     final interleaved = <Song>[];
-    final maxLen = max(neSongs.length, qqSongs.length);
+    final maxLen = max(max(neSongs.length, qqSongs.length), sodaSongs.length);
     for (var i = 0; i < maxLen; i++) {
       if (i < neSongs.length) interleaved.add(neSongs[i]);
       if (i < qqSongs.length) interleaved.add(qqSongs[i]);
+      if (i < sodaSongs.length) interleaved.add(sodaSongs[i]);
     }
 
-    // 过滤 VIP 由 build 里做，这里只做去重 + 数量限制
+    // 去重 + 排除已经显示过的
     final picked = <Song>[];
     for (final s in interleaved) {
       if (picked.length >= _perCategory) break;
@@ -176,7 +187,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     final favorites = ref.watch(favoriteSongsProvider);
     final hideVip = ref.watch(hideVipProvider);
 
-    // ★ 最近播放里也过滤
     final visibleRecent = hideVip
         ? recent.where((s) => !s.isVip).toList()
         : recent;
@@ -325,7 +335,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     bool hideVip,
   ) {
     final rawSongs = _recommendsByCategory[cat.id] ?? [];
-    // ★ 过滤 VIP
     final songs = hideVip ? rawSongs.where((s) => !s.isVip).toList() : rawSongs;
     final keyword = _keywordByCategory[cat.id] ?? '';
 

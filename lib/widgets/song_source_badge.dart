@@ -14,6 +14,7 @@ class SongSourceBadge extends StatelessWidget {
     'netease': ('网易', Color(0xFFC20C0C)),
     'qq': ('QQ', Color(0xFF31C27C)),
     'kugou': ('酷狗', Color(0xFF2CA2F9)),
+    'soda': ('抖音', Color(0xFFFE2C55)), // ← 加这行
     'local': ('本地', Color(0xFF8D94A8)),
   };
 
