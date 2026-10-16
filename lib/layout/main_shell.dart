@@ -11,7 +11,6 @@ class MainShell extends ConsumerWidget {
 
   const MainShell({super.key, required this.navigationShell});
 
-  /// 有歌时给 mini player 留的高度（收缩态固定 56）
   static const double _miniHeight = 56;
 
   @override
@@ -19,7 +18,6 @@ class MainShell extends ConsumerWidget {
     final bottom = MediaQuery.of(context).padding.bottom;
     final tabbarHeight = 76.0 + bottom;
 
-    // ★ 有正在播放 / 暂停的歌 → 留 mini 高度；否则只留 tabbar
     final hasSong = ref.watch(
       playerStateProvider.select((s) => s.current != null),
     );
@@ -37,7 +35,7 @@ class MainShell extends ConsumerWidget {
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
                   onTap: () =>
-                      ref.read(miniPlayerExpandedProvider.notifier).collapse(),
+                      ref.read(playerStateProvider.notifier).collapse(),
                   child: navigationShell,
                 ),
               ),
@@ -100,7 +98,7 @@ class MainShell extends ConsumerWidget {
         behavior: HitTestBehavior.opaque,
         onTap: () {
           HapticFeedback.selectionClick();
-          ref.read(miniPlayerExpandedProvider.notifier).collapse();
+          ref.read(playerStateProvider.notifier).collapse();
           navigationShell.goBranch(
             index,
             initialLocation: index == navigationShell.currentIndex,

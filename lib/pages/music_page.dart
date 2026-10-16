@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/song.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
-import '../services/music_api.dart';
+import '../providers/music_sources.dart';
 import '../theme/app_colors.dart';
 import '../widgets/song_tile.dart';
 
@@ -16,20 +16,16 @@ class RecommendCategory {
   const RecommendCategory(this.id, this.label, this.emoji, this.keywords);
 }
 
+/// 只做网易云 + QQ 的推荐，不用 B 站
 const _categories = [
   RecommendCategory('hot', '热门推荐', '🔥', [
     '热门华语歌曲',
     '抖音热歌',
     '2026 热门歌曲',
-    '2026 爆火',
     '华语热歌',
-    '当下最火',
     '网络热歌',
     '流行金曲',
-    '卡点神曲',
-    '热搜榜',
     '热歌榜',
-    '华语排行榜',
   ]),
   RecommendCategory('chinese', '华语流行', '🎤', [
     '华语经典',
@@ -41,13 +37,8 @@ const _categories = [
     '李荣浩',
     '毛不易',
     '许嵩',
-    '王力宏',
     '五月天',
-    '张学友',
     '华语情歌',
-    '经典老歌',
-    '8090 后',
-    '华语民谣',
   ]),
   RecommendCategory('cantonese', '粤语经典', '🎵', [
     '粤语经典',
@@ -58,9 +49,6 @@ const _categories = [
     '刘德华',
     '梅艳芳',
     '谭咏麟',
-    '林子祥',
-    '郑秀文',
-    '李克勤',
     '粤语金曲',
   ]),
   RecommendCategory('english', '英文歌曲', '🌍', [
@@ -69,13 +57,8 @@ const _categories = [
     'Ed Sheeran',
     'Adele',
     'Bruno Mars',
-    'Billie Eilish',
     '英文经典',
     '欧美热歌',
-    '英文情歌',
-    '欧美排行榜',
-    '英文摇滚',
-    '英文民谣',
   ]),
   RecommendCategory('pure', '纯音乐', '🎹', [
     '钢琴曲',
@@ -83,13 +66,8 @@ const _categories = [
     '纯音乐 治愈',
     '古风纯音乐',
     '吉他指弹',
-    '小提琴',
-    '钢琴 舒缓',
-    '音乐 学习',
-    '轻音乐 咖啡',
     '治愈系 纯音乐',
     '八音盒',
-    '尤克里里',
   ]),
   RecommendCategory('folk', '民谣', '🎸', [
     '民谣',
@@ -97,15 +75,14 @@ const _categories = [
     '房东的猫',
     '陈粒',
     '宋冬野',
-    '马頔',
     '朴树',
-    '李志',
     '民谣 治愈',
-    '民谣 吉他',
     '独立民谣',
-    '中国民谣',
   ]),
 ];
+
+/// 每行拿几首
+const int _perCategory = 6;
 
 class MusicPage extends ConsumerStatefulWidget {
   const MusicPage({super.key});
@@ -118,7 +95,8 @@ class _MusicPageState extends ConsumerState<MusicPage> {
   final Map<String, String> _keywordByCategory = {};
   bool _loading = false;
 
-  final Set<String> _shownIds = {};
+  /// 跨分类去重：key = "title|artist" 归一化
+  final Set<String> _shownKeys = {};
 
   @override
   void initState() {
@@ -126,10 +104,14 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     _loadAllCategories();
   }
 
+  String _keyOf(Song s) =>
+      '${s.title.toLowerCase().trim()}|${s.artist.toLowerCase().trim()}';
+
   Future<void> _loadAllCategories() async {
     if (mounted) setState(() => _loading = true);
-    // 清空去重记录，每次刷新都重新开始
-    _shownIds.clear();
+    _shownKeys.clear();
+
+    // 串行加载（每个分类里再并发查两个源），保持关键词轮换
     for (final cat in _categories) {
       await _loadCategory(cat.id);
     }
@@ -141,23 +123,53 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     final kw = cat.keywords[Random().nextInt(cat.keywords.length)];
     final page = 1 + Random().nextInt(3);
 
-    final result = await MusicApi.search(kw, page: page, pageSize: 30);
-    if (!mounted) return;
+    // ★ 只取网易云 + QQ，不用 B 站
+    final netease = ref.read(sourceByIdProvider)('netease');
+    final qq = ref.read(sourceByIdProvider)('qq');
 
-    final shuffled = [...result.songs]..shuffle();
+    // 并发查询两个源；单个失败不影响另一个
+    final results = await Future.wait<List<Song>>([
+      netease
+          .search(kw, page: page, pageSize: 30)
+          .then((r) => r.songs)
+          .catchError((e) {
+            print('❌ [推荐] 网易云搜索 "$kw" 失败: $e');
+            return <Song>[];
+          }),
+      qq.search(kw, page: page, pageSize: 30).then((r) => r.songs).catchError((
+        e,
+      ) {
+        print('❌ [推荐] QQ搜索 "$kw" 失败: $e');
+        return <Song>[];
+      }),
+    ]);
 
-    final fresh = shuffled.where((s) => !_shownIds.contains(s.id)).toList();
-    final fallback = shuffled.where((s) => _shownIds.contains(s.id)).toList();
+    final neSongs = results[0];
+    final qqSongs = results[1];
 
-    final picked = [
-      ...fresh.take(6),
-      ...fallback.take((6 - fresh.length).clamp(0, 6)),
-    ].take(6).toList();
+    print(
+      '📋 [推荐:$categoryId] "$kw" → 网易 ${neSongs.length} 条 / QQ ${qqSongs.length} 条',
+    );
 
-    for (final s in picked) {
-      _shownIds.add(s.id);
+    // ★ 交替混合：ne[0], qq[0], ne[1], qq[1]...
+    final interleaved = <Song>[];
+    final maxLen = max(neSongs.length, qqSongs.length);
+    for (var i = 0; i < maxLen; i++) {
+      if (i < neSongs.length) interleaved.add(neSongs[i]);
+      if (i < qqSongs.length) interleaved.add(qqSongs[i]);
     }
 
+    // 去重 + 排除已经显示过的
+    final picked = <Song>[];
+    for (final s in interleaved) {
+      if (picked.length >= _perCategory) break;
+      final key = _keyOf(s);
+      if (_shownKeys.contains(key)) continue;
+      _shownKeys.add(key);
+      picked.add(s);
+    }
+
+    if (!mounted) return;
     setState(() {
       _keywordByCategory[categoryId] = kw;
       _recommendsByCategory[categoryId] = picked;
@@ -177,12 +189,10 @@ class _MusicPageState extends ConsumerState<MusicPage> {
       child: SafeArea(
         bottom: false,
         child: CustomScrollView(
-          // ★ iOS 风格下拉刷新
           physics: const BouncingScrollPhysics(
             parent: AlwaysScrollableScrollPhysics(),
           ),
           slivers: [
-            // ═══════ 下拉刷新控件 ═══════
             CupertinoSliverRefreshControl(
               onRefresh: _loadAllCategories,
               builder:
@@ -193,7 +203,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                     refreshTriggerPullDistance,
                     refreshIndicatorExtent,
                   ) {
-                    // 默认样式即可，也可自定义
                     return const Center(
                       child: CupertinoActivityIndicator(
                         radius: 10,
@@ -202,8 +211,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                     );
                   },
             ),
-
-            // ═══════ 标题 ═══════
             const SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(20, 20, 20, 16),
@@ -219,8 +226,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 ),
               ),
             ),
-
-            // ═══════ 最近播放 ═══════
             if (recent.isNotEmpty) ...[
               SliverToBoxAdapter(
                 child: Padding(
@@ -251,16 +256,16 @@ class _MusicPageState extends ConsumerState<MusicPage> {
               SliverList(
                 delegate: SliverChildBuilderDelegate((_, i) {
                   final s = recent[i];
-                  final isFav = favorites.any((f) => f.id == s.id);
+                  final isFav = favorites.any((f) => f.globalId == s.globalId);
                   final displaySong = s.copyWith(isFavorite: isFav);
-                  final isLoadingThis =
-                      player.isLoading && player.current?.id == s.id;
+                  final active = player.current?.globalId == s.globalId;
+                  final isLoadingThis = player.isLoading && active;
 
                   return Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: SongTile(
                       song: displaySong,
-                      active: player.current?.id == s.id,
+                      active: active,
                       loading: isLoadingThis,
                       onTap: () {
                         playerNotifier.playSong(s, queue: recent);
@@ -272,8 +277,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 }, childCount: recent.length > 3 ? 3 : recent.length),
               ),
             ],
-
-            // ═══════ 为你推荐 ═══════
             const SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(20, 18, 20, 12),
@@ -288,8 +291,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 ),
               ),
             ),
-
-            // 每个分类一行
             ..._categories.map(
               (cat) => SliverToBoxAdapter(
                 child: _categoryCard(
@@ -302,7 +303,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 ),
               ),
             ),
-
             const SliverToBoxAdapter(child: SizedBox(height: 20)),
           ],
         ),
@@ -352,7 +352,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                // 每个分类单独刷新的小按钮
                 GestureDetector(
                   onTap: () => _loadCategory(cat.id),
                   child: Container(
@@ -385,14 +384,14 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 separatorBuilder: (_, __) => const SizedBox(width: 12),
                 itemBuilder: (_, i) {
                   final s = songs[i];
-                  final isFav = favorites.any((f) => f.id == s.id);
+                  final isFav = favorites.any((f) => f.globalId == s.globalId);
                   final displaySong = s.copyWith(isFavorite: isFav);
-                  final isLoadingThis =
-                      player.isLoading && player.current?.id == s.id;
+                  final active = player.current?.globalId == s.globalId;
+                  final isLoadingThis = player.isLoading && active;
 
                   return _songCard(
                     displaySong,
-                    player,
+                    active,
                     isLoadingThis,
                     onTap: () {
                       playerNotifier.playSong(displaySong, queue: songs);
@@ -410,13 +409,11 @@ class _MusicPageState extends ConsumerState<MusicPage> {
 
   Widget _songCard(
     Song song,
-    PlayerState player,
+    bool active,
     bool isLoadingThis, {
     required VoidCallback onTap,
     required VoidCallback onFavorite,
   }) {
-    final active = player.current?.id == song.id;
-
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -561,44 +558,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
             color: AppColors.card,
             borderRadius: BorderRadius.circular(18),
             boxShadow: AppColors.cardShadow,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 132,
-                height: 100,
-                decoration: const BoxDecoration(
-                  color: Color(0xFFF6F7FB),
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(11),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: 90,
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF0F1F6),
-                        borderRadius: BorderRadius.circular(5),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Container(
-                      width: 60,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF0F1F6),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
           ),
         ),
       ),

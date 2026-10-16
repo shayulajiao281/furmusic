@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
-import '../models/song.dart';
+import '../../../models/song.dart';
 
 const _navUrl = 'https://api.bilibili.com/x/web-interface/nav';
 const _searchUrl = 'https://api.bilibili.com/x/web-interface/wbi/search/type';
@@ -79,25 +79,25 @@ const _mixinKeyEncTab = [
   52,
 ];
 
-/// 搜索结果
-class SearchResult {
+/// B 站搜索结果（仅 BilibiliSource 内部使用）
+class BiliSearchResult {
   final List<Song> songs;
   final int page;
   final bool hasMore;
 
-  const SearchResult({
+  const BiliSearchResult({
     required this.songs,
     required this.page,
     required this.hasMore,
   });
 }
 
-class MusicApi {
+class BiliApi {
   static String? _imgKey;
   static String? _subKey;
   static String _cookies = '';
 
-  /// 供播放器使用（音频流需要 Referer + Cookie）
+  /// 音频流需要的请求头（Referer + Cookie）
   static Map<String, String> get audioHeaders => {
     'User-Agent': _ua,
     'Referer': 'https://www.bilibili.com',
@@ -173,21 +173,20 @@ class MusicApi {
   };
 
   // ═══════════════════════════════════════════
-  // 搜索（支持分页）
+  // 搜索
   // ═══════════════════════════════════════════
-  /// [page] 从 1 开始
-  static Future<SearchResult> search(
+  static Future<BiliSearchResult> search(
     String keyword, {
     int page = 1,
     int pageSize = 20,
   }) async {
     if (keyword.trim().isEmpty) {
-      return SearchResult(songs: [], page: page, hasMore: false);
+      return BiliSearchResult(songs: [], page: page, hasMore: false);
     }
 
     await _ensureWbi();
     if (_imgKey == null) {
-      return SearchResult(songs: [], page: page, hasMore: false);
+      return BiliSearchResult(songs: [], page: page, hasMore: false);
     }
 
     try {
@@ -207,7 +206,7 @@ class MusicApi {
       final json = jsonDecode(utf8.decode(res.bodyBytes));
       if (json['code'] != 0) {
         print('❌ 搜索失败: ${json['message']} (code: ${json['code']})');
-        return SearchResult(songs: [], page: page, hasMore: false);
+        return BiliSearchResult(songs: [], page: page, hasMore: false);
       }
 
       final data = json['data'];
@@ -222,6 +221,7 @@ class MusicApi {
           .map((item) {
             return Song(
               id: item['bvid']?.toString() ?? '',
+              source: 'bilibili',
               title: _cleanTitle(item['title']?.toString() ?? ''),
               artist: item['author']?.toString() ?? '未知UP主',
               album: '',
@@ -233,10 +233,14 @@ class MusicApi {
           .where((s) => s.id.isNotEmpty)
           .toList();
 
-      return SearchResult(songs: songs, page: page, hasMore: page < numPages);
+      return BiliSearchResult(
+        songs: songs,
+        page: page,
+        hasMore: page < numPages,
+      );
     } catch (e) {
       print('❌ 搜索异常: $e');
-      return SearchResult(songs: [], page: page, hasMore: false);
+      return BiliSearchResult(songs: [], page: page, hasMore: false);
     }
   }
 
@@ -245,6 +249,7 @@ class MusicApi {
   // ═══════════════════════════════════════════
   static Future<String?> getSongUrl(String bvid) async {
     await _ensureWbi();
+    if (_imgKey == null) return null;
 
     try {
       final viewRes = await http

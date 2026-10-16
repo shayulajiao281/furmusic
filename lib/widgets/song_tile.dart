@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../models/song.dart';
 import '../theme/app_colors.dart';
 import 'song_cover.dart';
+import 'song_source_badge.dart';
 
 class SongTile extends StatelessWidget {
   final Song song;
@@ -30,7 +31,6 @@ class SongTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      // ★ 加载中也能点（切别的歌）
       onTap: () {
         HapticFeedback.selectionClick();
         onTap();
@@ -63,19 +63,26 @@ class SongTile extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 3),
-                  Text(
-                    '${song.artist} · ${_fmt(song.duration)}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 11.5,
-                      color: AppColors.muted,
-                    ),
+                  Row(
+                    children: [
+                      SongSourceBadge(source: song.source),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '${song.artist} · ${_fmt(song.duration)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            color: AppColors.muted,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
-            // 加载中：转圈
             if (loading)
               const Padding(
                 padding: EdgeInsets.all(8),
@@ -84,7 +91,6 @@ class SongTile extends StatelessWidget {
                   color: AppColors.primary,
                 ),
               )
-            // 非加载：收藏按钮
             else if (onFavorite != null)
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
