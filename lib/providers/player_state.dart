@@ -88,13 +88,16 @@ class PlayerNotifier extends Notifier<PlayerState> {
   bool _switching = false;
   DateTime? _switchLockTime;
 
+  /// ★ 防"播完"事件重复触发
+  bool _completing = false;
+
   static const _lockTimeout = 20;
 
   @override
   PlayerState build() {
     _prefs = ref.read(sharedPrefsProvider);
 
-    _player.setLoopMode(LoopMode.all);
+    _player.setLoopMode(LoopMode.off);
     _player.setShuffleModeEnabled(false);
 
     _player.currentIndexStream.listen((idx) {
@@ -143,6 +146,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
       }
     });
 
+    // ★ 播完一首 → 手动处理
     _player.processingStateStream.listen((s) {
       if (s == ProcessingState.completed) {
         _onSongCompleted();
@@ -152,18 +156,56 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return _restore();
   }
 
+  // ═══════════════════════════════════════════
+  // ★ 播完当前歌：由这里接管
+  //   - 单曲循环：重播当前
+  //   - 列表循环 / 随机：切下一首
+  // ═══════════════════════════════════════════
   Future<void> _onSongCompleted() async {
-    switch (state.mode) {
-      case PlayMode.repeatOne:
+    if (_completing) return;
+    _completing = true;
+    try {
+      print('🔚 [player] 当前歌播完，模式=${state.mode.name}');
+
+      if (state.mode == PlayMode.repeatOne) {
+        // 单曲循环：重播当前
         try {
           await _player.seek(Duration.zero);
           unawaited(_player.play());
-        } catch (_) {}
-        break;
-      case PlayMode.repeatAll:
-      case PlayMode.shuffle:
-        await next();
-        break;
+          print('🔂 [player] 单曲循环：重播当前');
+        } catch (e) {
+          print('❌ [player] 重播失败: $e');
+        }
+        return;
+      }
+
+      // 列表循环 / 随机：切下一首
+      final cur = state.current;
+      if (cur == null || _queue.isEmpty) return;
+
+      final idx = _queue.indexWhere((s) => s.globalId == cur.globalId);
+      if (idx < 0) return;
+
+      int nextIdx;
+
+      if (state.mode == PlayMode.shuffle) {
+        // 随机：随便选一首（不等于当前）
+        if (_queue.length == 1) {
+          nextIdx = 0;
+        } else {
+          final rand = DateTime.now().millisecondsSinceEpoch % _queue.length;
+          nextIdx = rand == idx ? (idx + 1) % _queue.length : rand;
+        }
+      } else {
+        // 列表循环：下一首，到底回第一首
+        nextIdx = idx + 1;
+        if (nextIdx >= _queue.length) nextIdx = 0;
+      }
+
+      print('⏭ [player] 自动切到队列第 $nextIdx 首');
+      await _playIndex(nextIdx);
+    } finally {
+      _completing = false;
     }
   }
 
@@ -271,19 +313,19 @@ class PlayerNotifier extends Notifier<PlayerState> {
     } catch (_) {}
   }
 
+  // ★ 关键：单曲模式 → just_audio 只认 one/off
+  //   列表循环 / 随机 → 关掉 just_audio 的循环，由我们手动切
   void _applyModeToPlayer(PlayMode mode) {
     switch (mode) {
       case PlayMode.repeatAll:
-        _player.setLoopMode(LoopMode.all);
+      case PlayMode.shuffle:
+        // 播完就"停"，由 _onSongCompleted 接管
+        _player.setLoopMode(LoopMode.off);
         _player.setShuffleModeEnabled(false);
         break;
       case PlayMode.repeatOne:
         _player.setLoopMode(LoopMode.one);
         _player.setShuffleModeEnabled(false);
-        break;
-      case PlayMode.shuffle:
-        _player.setLoopMode(LoopMode.all);
-        _player.setShuffleModeEnabled(true);
         break;
     }
   }
@@ -459,8 +501,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     }
   }
 
-  /// ★ 关键：只判断路径是不是 http，不再看 source
-  ///   这样缓存文件（/data/user/...）会走 Uri.file，不再当 URL 解析
   AudioSource _toSource(Song s) {
     final path = s.audioPath;
     final isHttp = path.startsWith('http://') || path.startsWith('https://');
@@ -547,9 +587,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     await _playIndex(idx);
   }
 
-  // ═══════════════════════════════════════════
-  // 从播放队列移除
-  // ═══════════════════════════════════════════
   void removeFromQueue(Song song) {
     final oldIdx = _queue.indexWhere((s) => s.globalId == song.globalId);
     if (oldIdx < 0) {
@@ -561,7 +598,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     final newQueue = [..._queue]..removeAt(oldIdx);
     _queue = newQueue;
 
-    // 情况 1：删的不是当前歌
     if (!isCurrent) {
       state = state.copyWith(queue: List.unmodifiable(newQueue));
       _persist();
@@ -569,7 +605,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       return;
     }
 
-    // 情况 2：删的是当前歌，队列空了
     if (newQueue.isEmpty) {
       print('🗑 [player] 删除当前歌，队列空了，暂停');
       _forceStop();
@@ -587,7 +622,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       return;
     }
 
-    // 情况 3：删的是当前歌，队列还有
     final nextIdx = oldIdx < newQueue.length ? oldIdx : newQueue.length - 1;
     final nextSong = newQueue[nextIdx];
 
@@ -601,6 +635,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     state = state.copyWith(mode: mode);
     _applyModeToPlayer(mode);
     _persist();
+    print('🔀 [player] 播放模式切换为: ${mode.name}');
   }
 
   Future<void> nextPlayMode() async {

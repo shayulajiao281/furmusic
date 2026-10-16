@@ -18,6 +18,8 @@ Future<void> main() async {
     androidNotificationOngoing: true,
   );
 
+  // await AudioCache.clear();
+
   await AudioCache.size();
   AudioCache.trim().catchError((_) {});
 

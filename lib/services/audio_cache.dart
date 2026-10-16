@@ -8,6 +8,18 @@ class AudioCache {
   /// 正在下载中的歌曲 id（防重复下载）
   static final Set<String> _downloading = {};
 
+  /// ★ 把 songId 里的非法字符转掉
+  ///   songId 形如 "qq:003ggnKE2wLuAx"、"bilibili:BVxxx"、"local:12345"
+  ///   冒号在某些 Uri 解析里会被当成 scheme 分隔符，导致 "No host specified"
+  static String _safeName(String songId) {
+    return songId
+        .replaceAll(':', '_')
+        .replaceAll('/', '_')
+        .replaceAll('\\', '_')
+        .replaceAll('?', '_')
+        .replaceAll('*', '_');
+  }
+
   /// 初始化缓存目录
   static Future<Directory> _dir() async {
     if (_cacheDir != null) return _cacheDir!;
@@ -21,7 +33,7 @@ class AudioCache {
   /// 查缓存：有返回本地路径，没有返回 null
   static Future<String?> get(String songId) async {
     final dir = await _dir();
-    final file = File('${dir.path}/$songId');
+    final file = File('${dir.path}/${_safeName(songId)}');
     if (file.existsSync() && file.lengthSync() > 1024) {
       return file.path;
     }
@@ -39,8 +51,9 @@ class AudioCache {
 
     try {
       final dir = await _dir();
-      final tmpFile = File('${dir.path}/$songId.part');
-      final finalFile = File('${dir.path}/$songId');
+      final safe = _safeName(songId);
+      final tmpFile = File('${dir.path}/$safe.part');
+      final finalFile = File('${dir.path}/$safe');
 
       final request = http.Request('GET', Uri.parse(url));
       if (headers != null) request.headers.addAll(headers);
@@ -99,7 +112,6 @@ class AudioCache {
       if (e is File) files.add(e);
     }
 
-    // 按修改时间升序（最老在前）
     final fileList = files.cast<File>().toList()
       ..sort((a, b) => a.statSync().modified.compareTo(b.statSync().modified));
 
@@ -108,7 +120,6 @@ class AudioCache {
       total += f.statSync().size;
     }
 
-    // 超了就从最老的开始删
     int idx = 0;
     while (total > maxBytes && idx < fileList.length) {
       total -= fileList[idx].statSync().size;
