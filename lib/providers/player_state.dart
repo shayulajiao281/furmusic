@@ -23,8 +23,6 @@ class PlayerState {
   final int lyricIndex;
   final PlayMode mode;
   final List<Song> queue;
-
-  /// ★ 悬浮条是否处于全展开态
   final bool expanded;
 
   PlayerState({
@@ -118,7 +116,13 @@ class PlayerNotifier extends Notifier<PlayerState> {
           break;
         }
       }
+      final oldIdx = state.lyricIndex;
       state = state.copyWith(position: pos, lyricIndex: idx);
+
+      // ★ 当前歌词行变化 → 更新锁屏 / 通知栏
+      if (idx != oldIdx) {
+        _updateMediaItemLyric();
+      }
     });
 
     _player.durationStream.listen((d) {
@@ -129,6 +133,39 @@ class PlayerNotifier extends Notifier<PlayerState> {
     });
 
     return _restore();
+  }
+
+  // ═══ 更新通知栏 / 锁屏的歌词 ═══
+  Future<void> _updateMediaItemLyric() async {
+    final song = state.current;
+    if (song == null) return;
+
+    final line =
+        (state.lyricIndex >= 0 && state.lyricIndex < state.lyric.length)
+        ? state.lyric[state.lyricIndex].value
+        : '';
+
+    try {
+      final item = MediaItem(
+        id: song.globalId,
+        title: song.title,
+        // ★ artist 字段变成"歌手 · 歌词"；没歌词就只显示歌手
+        artist: line.isEmpty ? song.artist : '$line',
+        album: song.album,
+        duration: state.duration,
+        artUri: song.coverPath.isNotEmpty ? Uri.tryParse(song.coverPath) : null,
+        extras: {
+          'audioPath': song.audioPath,
+          'source': song.source,
+          'duration': song.duration.inMilliseconds,
+        },
+      );
+      // updateTag 在较新 just_audio 才有，动态调用兼容旧版
+      // ignore: avoid_dynamic_calls
+      await (_player as dynamic).updateTag(item);
+    } catch (_) {
+      // 不支持就静默忽略，不影响播放
+    }
   }
 
   // ═══ 展开/收缩 ═══
@@ -168,7 +205,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       _lastKnownDuration = song.duration;
       _applyModeToPlayer(mode);
 
-      // ★ 恢复后默认为收缩态
       return PlayerState(
         current: song,
         isPlaying: false,
@@ -228,7 +264,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     state = state.copyWith(
       current: song,
-      expanded: true, // ★ 只有主动点歌才全展开
+      expanded: true,
       isLoading: true,
       position: Duration.zero,
       duration: song.duration,
@@ -360,16 +396,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
   }
 
   Future<Song?> _resolveOne(Song song) async {
-    // 本地音乐直接返回
-    if (song.source == 'local') {
-      return song;
-    }
+    if (song.source == 'local') return song;
 
-    // ① 缓存
     final cached = await AudioCache.get(song.globalId);
     if (cached != null) return song.copyWith(audioPath: cached);
 
-    // ② 已有 URL → 直接用；否则调对应音源解析
     String? url = song.audioPath;
     if (url.isEmpty || !url.startsWith('http')) {
       final source = ref.read(sourceByIdProvider)(song.source);
@@ -378,7 +409,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     if (url == null || url.isEmpty) return null;
 
-    // ③ 后台缓存
     final source = ref.read(sourceByIdProvider)(song.source);
     AudioCache.download(
       song.globalId,
@@ -396,6 +426,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
         .then((lyric) {
           if (state.current?.globalId == song.globalId && lyric.isNotEmpty) {
             state = state.copyWith(lyric: lyric);
+            _updateMediaItemLyric();
           }
         })
         .catchError((_) {});

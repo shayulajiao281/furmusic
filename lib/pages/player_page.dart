@@ -5,6 +5,7 @@ import '../providers/app_state.dart';
 import '../providers/player_state.dart';
 import '../theme/app_colors.dart';
 import '../widgets/song_cover.dart';
+import '../widgets/lyric_view.dart';
 
 class PlayerPage extends ConsumerStatefulWidget {
   const PlayerPage({super.key});
@@ -16,6 +17,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   double _dragOffset = 0.0;
   double _screenHeight = 0;
   double? _dragProgress;
+
+  /// ★ 是否显示歌词（false = 显示封面）
+  bool _showLyric = false;
 
   String _fmt(Duration d) {
     final m = d.inMinutes;
@@ -65,7 +69,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     }
 
     final favorites = ref.watch(favoriteSongsProvider);
-    final isFav = favorites.any((s) => s.id == song.id);
+    final isFav = favorites.any((s) => s.globalId == song.globalId);
 
     return CupertinoPageScaffold(
       child: GestureDetector(
@@ -93,7 +97,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             child: SafeArea(
               child: Column(
                 children: [
-                  // 顶部
+                  // ─── 顶部 ───
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
                     child: Column(
@@ -129,7 +133,20 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                               ),
                             ),
                             const Spacer(),
-                            const SizedBox(width: 26),
+                            // ★ 手动切换歌词 / 封面
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              minSize: 0,
+                              onPressed: () =>
+                                  setState(() => _showLyric = !_showLyric),
+                              child: Icon(
+                                _showLyric
+                                    ? CupertinoIcons.music_note
+                                    : CupertinoIcons.text_quote,
+                                size: 22,
+                                color: AppColors.text,
+                              ),
+                            ),
                           ],
                         ),
                       ],
@@ -138,34 +155,25 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
                   const Spacer(),
 
-                  // 封面
+                  // ─── 封面 / 歌词切换区 ───
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 48),
+                    padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: AspectRatio(
                       aspectRatio: 1,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: AppColors.coverBg,
-                          borderRadius: BorderRadius.circular(24),
-                          boxShadow: const [
-                            BoxShadow(
-                              color: Color(0x1A1E2231),
-                              blurRadius: 40,
-                              offset: Offset(0, 16),
-                            ),
-                          ],
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(24),
-                          child: _buildCover(song.coverPath),
-                        ),
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        // 点空白处切换视图（点歌词行的 tap 会被内层消费）
+                        onTap: () => setState(() => _showLyric = !_showLyric),
+                        child: _showLyric
+                            ? _buildLyric(player, notifier)
+                            : _buildCover(song.coverPath),
                       ),
                     ),
                   ),
 
                   const SizedBox(height: 28),
 
-                  // 标题
+                  // ─── 标题 ───
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Column(
@@ -198,7 +206,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
                   const SizedBox(height: 24),
 
-                  // QQ 音乐风格进度条
+                  // ─── 进度条 ───
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Builder(
@@ -276,7 +284,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
                   const SizedBox(height: 12),
 
-                  // 控制按钮
+                  // ─── 控制按钮 ───
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Row(
@@ -384,17 +392,62 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     );
   }
 
+  // ─── 封面 ───
   Widget _buildCover(String path) {
-    if (path.isEmpty) {
-      return const Center(
-        child: Icon(
-          CupertinoIcons.music_note,
-          size: 80,
-          color: AppColors.muted,
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.coverBg,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x1A1E2231),
+            blurRadius: 40,
+            offset: Offset(0, 16),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: path.isEmpty
+            ? const Center(
+                child: Icon(
+                  CupertinoIcons.music_note,
+                  size: 80,
+                  color: AppColors.muted,
+                ),
+              )
+            : SongCover(path: path, size: double.infinity, radius: 0),
+      ),
+    );
+  }
+
+  // ─── 歌词 ───
+  Widget _buildLyric(PlayerState player, PlayerNotifier notifier) {
+    return Container(
+      decoration: BoxDecoration(
+        color: CupertinoColors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x1A1E2231),
+            blurRadius: 40,
+            offset: Offset(0, 16),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: LyricView(
+          lyric: player.lyric,
+          currentIndex: player.lyricIndex,
+          onSeek: (d) async {
+            await notifier.seek(d);
+            if (!player.isPlaying) await notifier.togglePlay();
+            HapticFeedback.selectionClick();
+          },
         ),
-      );
-    }
-    return SongCover(path: path, size: double.infinity, radius: 0);
+      ),
+    );
   }
 }
 
@@ -468,7 +521,6 @@ class _QQSliderState extends State<QQSlider> {
             child: Stack(
               alignment: Alignment.centerLeft,
               children: [
-                // 底轨（灰色）
                 Container(
                   height: trackHeight,
                   width: width,
@@ -477,7 +529,6 @@ class _QQSliderState extends State<QQSlider> {
                     borderRadius: BorderRadius.circular(trackHeight / 2),
                   ),
                 ),
-                // 已播进度（主题色）
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 100),
                   height: trackHeight,
@@ -487,7 +538,6 @@ class _QQSliderState extends State<QQSlider> {
                     borderRadius: BorderRadius.circular(trackHeight / 2),
                   ),
                 ),
-                // 圆点
                 Positioned(
                   left: (thumbX - thumbSize / 2).clamp(0.0, width - thumbSize),
                   child: AnimatedContainer(
@@ -505,7 +555,6 @@ class _QQSliderState extends State<QQSlider> {
                       boxShadow: _dragging
                           ? [
                               BoxShadow(
-                                // ★ withOpacity → withValues
                                 color: AppColors.primary.withValues(
                                   alpha: 0.35,
                                 ),
