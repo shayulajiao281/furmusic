@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
@@ -82,6 +84,11 @@ const _categories = [
 
 const int _perCategory = 6;
 
+/// ★ 缓存 key 和过期时间
+const _kCacheKey = 'furkid_recommend_cache_v1';
+const _kCacheTimeKey = 'furkid_recommend_cache_time';
+const _cacheValidMs = 5 * 60 * 1000; // 5 分钟
+
 class MusicPage extends ConsumerStatefulWidget {
   const MusicPage({super.key});
   @override
@@ -97,19 +104,83 @@ class _MusicPageState extends ConsumerState<MusicPage> {
   @override
   void initState() {
     super.initState();
-    _loadAllCategories();
+    _bootstrap();
+  }
+
+  // ═══════════════════════════════════════════
+  // 启动：先看缓存，命中就直接用
+  // ═══════════════════════════════════════════
+  Future<void> _bootstrap() async {
+    final loadedFromCache = await _tryLoadCache();
+    if (loadedFromCache) {
+      print('📦 [推荐] 命中缓存，跳过网络请求');
+      return;
+    }
+    await _loadAllCategories(saveCache: true);
+  }
+
+  Future<bool> _tryLoadCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kCacheKey);
+      final t = prefs.getInt(_kCacheTimeKey) ?? 0;
+      if (raw == null || raw.isEmpty) return false;
+      if (DateTime.now().millisecondsSinceEpoch - t > _cacheValidMs) {
+        return false;
+      }
+
+      final json = jsonDecode(raw) as Map<String, dynamic>;
+      final keywordsRaw = json['keywords'] as Map<String, dynamic>? ?? {};
+      final songsRaw = json['songs'] as Map<String, dynamic>? ?? {};
+
+      setState(() {
+        _recommendsByCategory.clear();
+        _keywordByCategory.clear();
+        songsRaw.forEach((catId, list) {
+          _recommendsByCategory[catId] = (list as List)
+              .map((e) => Song.fromJson(e as Map<String, dynamic>))
+              .toList();
+        });
+        keywordsRaw.forEach((k, v) {
+          _keywordByCategory[k] = v.toString();
+        });
+      });
+      return true;
+    } catch (e) {
+      print('⚠️ [推荐] 缓存解析失败: $e');
+      return false;
+    }
+  }
+
+  Future<void> _saveCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = jsonEncode({
+        'keywords': _keywordByCategory,
+        'songs': _recommendsByCategory.map(
+          (k, v) => MapEntry(k, v.map((s) => s.toJson()).toList()),
+        ),
+      });
+      await prefs.setString(_kCacheKey, json);
+      await prefs.setInt(_kCacheTimeKey, DateTime.now().millisecondsSinceEpoch);
+    } catch (e) {
+      print('⚠️ [推荐] 缓存保存失败: $e');
+    }
   }
 
   String _keyOf(Song s) =>
       '${s.title.toLowerCase().trim()}|${s.artist.toLowerCase().trim()}';
 
-  Future<void> _loadAllCategories() async {
+  Future<void> _loadAllCategories({bool saveCache = false}) async {
     if (mounted) setState(() => _loading = true);
     _shownKeys.clear();
     for (final cat in _categories) {
       await _loadCategory(cat.id);
+      // ★ 分类之间错峰 300ms，避免一次打出一串请求
+      await Future.delayed(const Duration(milliseconds: 300));
     }
     if (mounted) setState(() => _loading = false);
+    if (saveCache) await _saveCache();
   }
 
   Future<void> _loadCategory(String categoryId) async {
@@ -118,51 +189,44 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     final page = 1 + Random().nextInt(3);
 
     final netease = ref.read(sourceByIdProvider)('netease');
-    final qq = ref.read(sourceByIdProvider)('qq');
     final kugou = ref.read(sourceByIdProvider)('kugou');
+    // ★ QQ 移出推荐页，只在发现页用（避免被限流）
 
-    // 三源并发，单源失败不影响其他
-    final results = await Future.wait<List<Song>>([
-      netease
-          .search(kw, page: page, pageSize: 30)
-          .then((r) => r.songs)
-          .catchError((e) {
-            print('❌ [推荐] 网易云搜索 "$kw" 失败: $e');
-            return <Song>[];
-          }),
-      qq.search(kw, page: page, pageSize: 30).then((r) => r.songs).catchError((
-        e,
-      ) {
-        print('❌ [推荐] QQ搜索 "$kw" 失败: $e');
-        return <Song>[];
-      }),
-      kugou
-          .search(kw, page: page, pageSize: 30)
-          .then((r) => r.songs)
-          .catchError((e) {
-            print('❌ [推荐] 酷狗搜索 "$kw" 失败: $e');
-            return <Song>[];
-          }),
-    ]);
+    // ★ 网易先发，等 200ms 再发酷狗，错峰
+    final neFuture = netease
+        .search(kw, page: page, pageSize: 30)
+        .then((r) => r.songs)
+        .catchError((e) {
+          print('❌ [推荐] 网易搜索 "$kw" 失败: $e');
+          return <Song>[];
+        });
 
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    final kgFuture = kugou
+        .search(kw, page: page, pageSize: 30)
+        .then((r) => r.songs)
+        .catchError((e) {
+          print('❌ [推荐] 酷狗搜索 "$kw" 失败: $e');
+          return <Song>[];
+        });
+
+    final results = await Future.wait([neFuture, kgFuture]);
     final neSongs = results[0];
-    final qqSongs = results[1];
-    final kgSongs = results[2];
+    final kgSongs = results[1];
 
     print(
-      '📋 [推荐:$categoryId] "$kw" → 网易 ${neSongs.length} / QQ ${qqSongs.length} / 酷狗 ${kgSongs.length}',
+      '📋 [推荐:$categoryId] "$kw" → 网易 ${neSongs.length} / 酷狗 ${kgSongs.length}',
     );
 
-    // 三源交替混合：ne[0], qq[0], kg[0], ne[1], qq[1], kg[1]...
+    // 双源交替
     final interleaved = <Song>[];
-    final maxLen = max(max(neSongs.length, qqSongs.length), kgSongs.length);
+    final maxLen = max(neSongs.length, kgSongs.length);
     for (var i = 0; i < maxLen; i++) {
       if (i < neSongs.length) interleaved.add(neSongs[i]);
-      if (i < qqSongs.length) interleaved.add(qqSongs[i]);
       if (i < kgSongs.length) interleaved.add(kgSongs[i]);
     }
 
-    // 去重 + 排除已经显示过的
     final picked = <Song>[];
     for (final s in interleaved) {
       if (picked.length >= _perCategory) break;
@@ -177,6 +241,14 @@ class _MusicPageState extends ConsumerState<MusicPage> {
       _keywordByCategory[categoryId] = kw;
       _recommendsByCategory[categoryId] = picked;
     });
+  }
+
+  /// 用户主动下拉刷新 → 强制重新拉并更新缓存
+  Future<void> _forceRefresh() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kCacheKey);
+    await prefs.remove(_kCacheTimeKey);
+    await _loadAllCategories(saveCache: true);
   }
 
   @override
@@ -202,7 +274,8 @@ class _MusicPageState extends ConsumerState<MusicPage> {
           ),
           slivers: [
             CupertinoSliverRefreshControl(
-              onRefresh: _loadAllCategories,
+              // ★ 下拉刷新强制拉新数据
+              onRefresh: _forceRefresh,
               builder:
                   (
                     context,
