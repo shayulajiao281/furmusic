@@ -21,6 +21,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   bool _loading = false;
   bool _searched = false;
 
+  /// null = 全部（聚合），否则只搜这一个源
   String? _filterSource;
 
   @override
@@ -29,9 +30,9 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     super.dispose();
   }
 
-  /// 先按源筛选，再按是否隐藏 VIP 筛选
   List<Song> _displayResults(bool hideVip) {
     var list = _results;
+    // 单源搜索时 _results 已经是该源的，这里是保险
     if (_filterSource != null) {
       list = list.where((s) => s.source == _filterSource).toList();
     }
@@ -39,6 +40,15 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
       list = list.where((s) => !s.isVip).toList();
     }
     return list;
+  }
+
+  /// 点 chip：切换源 → 如果已经搜过，自动重搜
+  void _selectSource(String? source) {
+    if (_filterSource == source) return;
+    setState(() => _filterSource = source);
+    if (_currentKeyword.isNotEmpty) {
+      _search();
+    }
   }
 
   Future<void> _search() async {
@@ -53,18 +63,40 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
       _currentKeyword = kw;
     });
 
-    final aggregator = ref.read(aggregateSearchProvider);
-    await aggregator.search(
-      kw,
-      page: 1,
-      onPartial: (partial) {
+    if (_filterSource == null) {
+      // ── 全部：聚合搜索，流式返回 ──
+      final aggregator = ref.read(aggregateSearchProvider);
+      await aggregator.search(
+        kw,
+        page: 1,
+        onPartial: (partial) {
+          if (!mounted) return;
+          setState(() {
+            _results = partial;
+            _loading = false;
+          });
+        },
+      );
+    } else {
+      // ── 单源：只搜这一个 ──
+      final source = ref.read(sourceByIdProvider)(_filterSource!);
+      try {
+        final r = await source.search(kw, page: 1, pageSize: 30);
         if (!mounted) return;
         setState(() {
-          _results = partial;
+          _results = r.songs;
           _loading = false;
         });
-      },
-    );
+      } catch (e) {
+        print('❌ 单源搜索失败 [${_filterSource}]: $e');
+        if (!mounted) return;
+        setState(() {
+          _results = [];
+          _loading = false;
+        });
+      }
+    }
+
     if (mounted) setState(() => _loading = false);
   }
 
@@ -95,12 +127,9 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     final hideVip = ref.watch(hideVipProvider);
     final results = _displayResults(hideVip);
 
-    // 隐藏后如果原结果里全是 VIP，提示用户
-    final allHiddenByVip =
-        _results.isNotEmpty &&
-        results.isEmpty &&
-        _filterSource == null &&
-        hideVip;
+    final allHiddenByVip = _results.isNotEmpty && results.isEmpty && hideVip;
+    final sourceEmpty =
+        _searched && _results.isEmpty && !_loading && _filterSource != null;
 
     return Container(
       color: AppColors.bg,
@@ -180,8 +209,8 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
               ),
             ),
 
-            // 音源筛选 chips
-            if (_searched && _results.isNotEmpty)
+            // ★ 音源 chips：只要搜过就显示（哪怕结果为空）
+            if (_searched)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
                 child: SizedBox(
@@ -205,7 +234,10 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
               child: _loading
                   ? const Center(child: CupertinoActivityIndicator())
                   : results.isEmpty
-                  ? _empty(allHiddenByVip: allHiddenByVip)
+                  ? _empty(
+                      allHiddenByVip: allHiddenByVip,
+                      sourceEmpty: sourceEmpty,
+                    )
                   : ListView.builder(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
                       itemCount: results.length,
@@ -241,7 +273,8 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: GestureDetector(
-        onTap: () => setState(() => _filterSource = source),
+        // ★ 切换源 → 自动重搜
+        onTap: () => _selectSource(source),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           alignment: Alignment.center,
@@ -265,28 +298,53 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     );
   }
 
-  Widget _empty({required bool allHiddenByVip}) => Center(
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(
-          _searched ? CupertinoIcons.search : CupertinoIcons.compass,
-          size: 50,
-          color: AppColors.muted,
-        ),
-        const SizedBox(height: 14),
-        Text(
-          allHiddenByVip
-              ? '搜到的都是 VIP 歌曲\n（可在「我的」里关闭隐藏 VIP）'
-              : (_searched ? '没有找到相关歌曲' : '搜索全网音乐'),
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            fontSize: 13.5,
+  Widget _empty({required bool allHiddenByVip, required bool sourceEmpty}) {
+    final String text;
+    if (allHiddenByVip) {
+      text = '搜到的都是 VIP 歌曲\n（可在「我的」里关闭隐藏 VIP）';
+    } else if (sourceEmpty) {
+      final srcName = _sourceName(_filterSource!);
+      text = '$srcName 没有返回结果\n换个源试试，或点「全部」';
+    } else if (_searched) {
+      text = '没有找到相关歌曲';
+    } else {
+      text = '搜索全网音乐';
+    }
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            _searched ? CupertinoIcons.search : CupertinoIcons.compass,
+            size: 50,
             color: AppColors.muted,
-            height: 1.7,
           ),
-        ),
-      ],
-    ),
-  );
+          const SizedBox(height: 14),
+          Text(
+            text,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 13.5,
+              color: AppColors.muted,
+              height: 1.7,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _sourceName(String id) {
+    switch (id) {
+      case 'bilibili':
+        return 'B站';
+      case 'netease':
+        return '网易云';
+      case 'qq':
+        return 'QQ音乐';
+      default:
+        return id;
+    }
+  }
 }
