@@ -51,6 +51,15 @@ const _platforms = [
     cookieUrl: 'https://y.qq.com',
     requiredKeys: ['qm_keyst'],
   ),
+  _Platform(
+    id: 'kugou',
+    name: '酷狗音乐',
+    icon: CupertinoIcons.headphones,
+    color: Color(0xFF2CA2F9),
+    loginUrl: 'https://www.kugou.com/',
+    cookieUrl: 'https://www.kugou.com',
+    requiredKeys: ['token'],
+  ),
 ];
 
 class AccountPage extends ConsumerWidget {

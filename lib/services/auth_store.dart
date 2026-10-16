@@ -36,6 +36,10 @@ class AuthStore {
     switch (source) {
       case 'netease':
         return 'appver=8.7.01; os=pc;';
+      case 'kugou':
+        // 酷狗接口要求的基础字段，缺了会返回 err_code != 0
+        return 'kg_mid=b3b9a5f0a2c88f47b3b9a5f0a2c88f47; '
+            'kg_dfid=2qGyqq0CxV2w3n0iC0W0K2Ne;';
       default:
         return '';
     }

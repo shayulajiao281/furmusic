@@ -1,5 +1,6 @@
 import '../models/song.dart';
 
+/// 搜索结果封装
 class SearchResult {
   final List<Song> songs;
   final bool hasMore;
@@ -8,7 +9,7 @@ class SearchResult {
 
 /// 所有音乐平台的统一接口
 abstract class MusicSource {
-  /// 唯一标识，'bilibili' / 'netease' / 'qq' / 'kugou'
+  /// 唯一标识：'bilibili' / 'netease' / 'qq' / 'kugou'
   String get id;
 
   /// 显示名

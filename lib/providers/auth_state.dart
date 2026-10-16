@@ -5,8 +5,9 @@ class AuthState {
   final String? bilibili;
   final String? netease;
   final String? qq;
+  final String? kugou;
 
-  const AuthState({this.bilibili, this.netease, this.qq});
+  const AuthState({this.bilibili, this.netease, this.qq, this.kugou});
 
   String? of(String source) {
     switch (source) {
@@ -16,6 +17,8 @@ class AuthState {
         return netease;
       case 'qq':
         return qq;
+      case 'kugou':
+        return kugou;
     }
     return null;
   }
@@ -28,6 +31,7 @@ class AuthNotifier extends Notifier<AuthState> {
     bilibili: AuthStore.getCookie('bilibili'),
     netease: AuthStore.getCookie('netease'),
     qq: AuthStore.getCookie('qq'),
+    kugou: AuthStore.getCookie('kugou'),
   );
 
   @override

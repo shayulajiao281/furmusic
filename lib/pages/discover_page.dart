@@ -275,7 +275,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                       _chip('B站', 'bilibili'),
                       _chip('网易云', 'netease'),
                       _chip('QQ音乐', 'qq'),
-                      _chip('抖音音乐', 'soda'),
+                      _chip('酷狗', 'kugou'),
                     ],
                   ),
                 ),
