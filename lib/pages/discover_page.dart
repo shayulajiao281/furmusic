@@ -21,7 +21,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   bool _loading = false;
   bool _searched = false;
 
-  /// 当前筛选（null = 全部）
   String? _filterSource;
 
   @override
@@ -30,9 +29,16 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     super.dispose();
   }
 
-  List<Song> get _displayResults {
-    if (_filterSource == null) return _results;
-    return _results.where((s) => s.source == _filterSource).toList();
+  /// 先按源筛选，再按是否隐藏 VIP 筛选
+  List<Song> _displayResults(bool hideVip) {
+    var list = _results;
+    if (_filterSource != null) {
+      list = list.where((s) => s.source == _filterSource).toList();
+    }
+    if (hideVip) {
+      list = list.where((s) => !s.isVip).toList();
+    }
+    return list;
   }
 
   Future<void> _search() async {
@@ -62,10 +68,10 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     if (mounted) setState(() => _loading = false);
   }
 
-  void _playSong(Song song) {
+  void _playSong(Song song, List<Song> queue) {
     final notifier = ref.read(playerStateProvider.notifier);
     final appNotifier = ref.read(appStateProvider.notifier);
-    notifier.playSong(song, queue: _displayResults);
+    notifier.playSong(song, queue: queue);
     appNotifier.addRecent(song);
   }
 
@@ -86,7 +92,15 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   Widget build(BuildContext context) {
     final player = ref.watch(playerStateProvider);
     final favorites = ref.watch(favoriteSongsProvider);
-    final results = _displayResults;
+    final hideVip = ref.watch(hideVipProvider);
+    final results = _displayResults(hideVip);
+
+    // 隐藏后如果原结果里全是 VIP，提示用户
+    final allHiddenByVip =
+        _results.isNotEmpty &&
+        results.isEmpty &&
+        _filterSource == null &&
+        hideVip;
 
     return Container(
       color: AppColors.bg,
@@ -132,7 +146,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                     Expanded(
                       child: CupertinoTextField(
                         controller: _searchCtrl,
-                        placeholder: '搜索音乐（B站 / 网易 / QQ / 酷狗）',
+                        placeholder: '搜索音乐（B站 / 网易 / QQ）',
                         placeholderStyle: const TextStyle(
                           fontSize: 14,
                           color: Color(0xFFC2C8D6),
@@ -179,7 +193,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                       _chip('B站', 'bilibili'),
                       _chip('网易云', 'netease'),
                       _chip('QQ音乐', 'qq'),
-                      _chip('酷狗', 'kugou'),
                     ],
                   ),
                 ),
@@ -192,7 +205,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
               child: _loading
                   ? const Center(child: CupertinoActivityIndicator())
                   : results.isEmpty
-                  ? _empty()
+                  ? _empty(allHiddenByVip: allHiddenByVip)
                   : ListView.builder(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
                       itemCount: results.length,
@@ -211,7 +224,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                           song: displaySong,
                           active: active,
                           loading: isLoadingThis,
-                          onTap: () => _playSong(s),
+                          onTap: () => _playSong(s, results),
                           onFavorite: () => _toggleFav(displaySong),
                         );
                       },
@@ -252,7 +265,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     );
   }
 
-  Widget _empty() => Center(
+  Widget _empty({required bool allHiddenByVip}) => Center(
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -263,7 +276,10 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
         ),
         const SizedBox(height: 14),
         Text(
-          _searched ? '没有找到相关歌曲' : '搜索全网音乐',
+          allHiddenByVip
+              ? '搜到的都是 VIP 歌曲\n（可在「我的」里关闭隐藏 VIP）'
+              : (_searched ? '没有找到相关歌曲' : '搜索全网音乐'),
+          textAlign: TextAlign.center,
           style: const TextStyle(
             fontSize: 13.5,
             color: AppColors.muted,

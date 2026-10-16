@@ -34,24 +34,25 @@ class NeteaseDirect extends DirectSource {
   @override
   SearchResult parseSearchResult(Map<String, dynamic> json) {
     try {
-      final songs = (json['result']?['songs'] as List? ?? [])
-          .map(
-            (item) => Song(
-              id: item['id'].toString(),
-              source: id,
-              title: item['name'] ?? '',
-              artist:
-                  (item['artists'] as List?)
-                      ?.map((a) => a['name'])
-                      .join(', ') ??
-                  '',
-              album: item['album']?['name'] ?? '',
-              coverPath: item['album']?['picUrl'] ?? '',
-              audioPath: '',
-              duration: Duration(milliseconds: (item['duration'] as int?) ?? 0),
-            ),
-          )
-          .toList();
+      final songs = (json['result']?['songs'] as List? ?? []).map((item) {
+        // ★ fee != 0 视为 VIP / 付费
+        final fee = (item['fee'] as int?) ?? 0;
+        final isVip = fee != 0;
+
+        return Song(
+          id: item['id'].toString(),
+          source: id,
+          title: item['name'] ?? '',
+          artist:
+              (item['artists'] as List?)?.map((a) => a['name']).join(', ') ??
+              '',
+          album: item['album']?['name'] ?? '',
+          coverPath: item['album']?['picUrl'] ?? '',
+          audioPath: '',
+          duration: Duration(milliseconds: (item['duration'] as int?) ?? 0),
+          isVip: isVip,
+        );
+      }).toList();
       return SearchResult(songs: songs, hasMore: false);
     } catch (e) {
       print('❌ [netease] 解析搜索 JSON 出错: $e');
@@ -80,7 +81,6 @@ class NeteaseDirect extends DirectSource {
       final fee = data?['fee'];
 
       if (url == null || url.isEmpty) {
-        // ★ 打印服务端真实 code，方便判断是 VIP 还是无版权
         print('❌ [netease] url 为空 (code=$code, fee=$fee)');
         return null;
       }

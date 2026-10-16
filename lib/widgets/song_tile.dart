@@ -65,7 +65,7 @@ class SongTile extends StatelessWidget {
                   const SizedBox(height: 3),
                   Row(
                     children: [
-                      SongSourceBadge(source: song.source),
+                      SongSourceBadge(source: song.source, showVip: song.isVip),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(

@@ -3,7 +3,7 @@ import 'package:just_audio_background/just_audio_background.dart';
 class Song {
   final String id;
 
-  /// ★ 音源：'bilibili' | 'netease' | 'qq' | 'kugou' | 'local'
+  /// 音源：'bilibili' | 'netease' | 'qq' | 'kugou' | 'local'
   String source;
 
   String title;
@@ -13,6 +13,9 @@ class Song {
   String audioPath;
   Duration duration;
   bool isFavorite;
+
+  /// ★ 是否是 VIP / 付费歌曲
+  bool isVip;
 
   Song({
     required this.id,
@@ -24,9 +27,10 @@ class Song {
     required this.audioPath,
     this.duration = Duration.zero,
     this.isFavorite = false,
+    this.isVip = false,
   });
 
-  /// 全局唯一 id：`source:id`（用于缓存、去重、active 判定）
+  /// 全局唯一 id：`source:id`
   String get globalId => '$source:$id';
 
   MediaItem toMediaItem() => MediaItem(
@@ -49,6 +53,7 @@ class Song {
     'audioPath': audioPath,
     'duration': duration.inMilliseconds,
     'isFavorite': isFavorite,
+    'isVip': isVip,
   };
 
   factory Song.fromJson(Map<String, dynamic> j) => Song(
@@ -61,6 +66,7 @@ class Song {
     audioPath: j['audioPath'] as String? ?? '',
     duration: Duration(milliseconds: (j['duration'] as int?) ?? 0),
     isFavorite: j['isFavorite'] as bool? ?? false,
+    isVip: j['isVip'] as bool? ?? false,
   );
 
   Song copyWith({
@@ -73,6 +79,7 @@ class Song {
     String? audioPath,
     Duration? duration,
     bool? isFavorite,
+    bool? isVip,
   }) => Song(
     id: id ?? this.id,
     source: source ?? this.source,
@@ -83,5 +90,6 @@ class Song {
     audioPath: audioPath ?? this.audioPath,
     duration: duration ?? this.duration,
     isFavorite: isFavorite ?? this.isFavorite,
+    isVip: isVip ?? this.isVip,
   );
 }

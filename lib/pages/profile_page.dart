@@ -16,6 +16,12 @@ class ProfilePage extends ConsumerWidget {
     final player = ref.watch(playerStateProvider);
     final favorites = ref.watch(favoriteSongsProvider);
     final recent = ref.watch(recentSongsProvider);
+    final hideVip = ref.watch(hideVipProvider);
+
+    // ★ 收藏里过滤掉 VIP（如果开启了）
+    final visibleFavorites = hideVip
+        ? favorites.where((s) => !s.isVip).toList()
+        : favorites;
 
     return Container(
       color: AppColors.bg,
@@ -50,7 +56,7 @@ class ProfilePage extends ConsumerWidget {
                     onTap: () => context.push('/local-music'),
                   ),
                   const SizedBox(height: 10),
-                  // ★ 播放历史入口
+                  // 播放历史入口
                   _entryCard(
                     icon: CupertinoIcons.clock,
                     title: '播放历史',
@@ -59,19 +65,31 @@ class ProfilePage extends ConsumerWidget {
                         : '共 ${recent.length} 首',
                     onTap: () => context.push('/play-history'),
                   ),
+                  const SizedBox(height: 10),
+                  // ★ 设置开关卡片
+                  _switchCard(
+                    icon: CupertinoIcons.eye_slash,
+                    title: '隐藏 VIP 歌曲',
+                    subtitle: hideVip ? '已隐藏需要会员的歌曲' : '显示全部歌曲',
+                    value: hideVip,
+                    onChanged: (v) => appNotifier.setHideVip(v),
+                  ),
+
                   const SizedBox(height: 20),
 
                   // 我的收藏
-                  _sectionTitle('我的收藏 · ${favorites.length}'),
-                  if (favorites.isEmpty)
-                    _emptyHint('还没有收藏的歌曲')
+                  _sectionTitle('我的收藏 · ${visibleFavorites.length}'),
+                  if (visibleFavorites.isEmpty)
+                    _emptyHint(
+                      favorites.isEmpty ? '还没有收藏的歌曲' : '当前隐藏了所有 VIP 收藏',
+                    )
                   else
-                    ...favorites.map(
+                    ...visibleFavorites.map(
                       (s) => SongTile(
                         song: s,
-                        active: player.current?.id == s.id,
+                        active: player.current?.globalId == s.globalId,
                         onTap: () {
-                          playerNotifier.playSong(s, queue: favorites);
+                          playerNotifier.playSong(s, queue: visibleFavorites);
                           appNotifier.addRecent(s);
                         },
                         onFavorite: () => appNotifier.toggleFavorite(s),
@@ -142,6 +160,72 @@ class ProfilePage extends ConsumerWidget {
               CupertinoIcons.chevron_forward,
               size: 18,
               color: AppColors.muted,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// ★ 带开关的卡片
+  Widget _switchCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => onChanged(!value),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: AppColors.cardShadow,
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppColors.primarySoft,
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: Icon(icon, size: 22, color: AppColors.primary),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.text,
+                      height: 1.3,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            CupertinoSwitch(
+              value: value,
+              activeTrackColor: AppColors.primary,
+              onChanged: onChanged,
             ),
           ],
         ),

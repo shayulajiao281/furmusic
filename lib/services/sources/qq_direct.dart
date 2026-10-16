@@ -39,11 +39,15 @@ class QQDirect extends DirectSource {
       final songs = list.map((item) {
         final singers =
             (item['singer'] as List?)?.map((s) => s['name']).join(', ') ?? '';
-        // ★ 修复：albummid 为空就返回空字符串，避免拼出 404 的图片 URL
         final albumMid = item['albummid']?.toString() ?? '';
         final cover = albumMid.isEmpty
             ? ''
             : 'https://y.gtimg.cn/music/photo_new/T002R300x300M000$albumMid.jpg';
+
+        // ★ payplay == 1 视为 VIP / 付费
+        final pay = item['pay'] as Map?;
+        final payplay = (pay?['payplay'] as int?) ?? 0;
+        final isVip = payplay == 1;
 
         return Song(
           id: item['songmid'].toString(),
@@ -54,6 +58,7 @@ class QQDirect extends DirectSource {
           coverPath: cover,
           audioPath: '',
           duration: Duration(seconds: (item['interval'] as int?) ?? 0),
+          isVip: isVip,
         );
       }).toList();
       return SearchResult(songs: songs, hasMore: false);
@@ -100,9 +105,8 @@ class QQDirect extends DirectSource {
       final errCode = json['req_0']?['code'];
 
       if (purl == null || purl.isEmpty) {
-        // ★ 打印服务端真实错误码，方便定位是 VIP 还是别的原因
         print(
-          '❌ [qq] purl 为空 (req_0.code=$errCode, msg=${json['req_0']?['data']?['midurlinfo']?[0]?['result']})',
+          '❌ [qq] purl 为空 (req_0.code=$errCode, result=${data?['midurlinfo']?[0]?['result']})',
         );
         return null;
       }
@@ -136,7 +140,6 @@ class QQDirect extends DirectSource {
       }
 
       final text = utf8.decode(res.bodyBytes);
-      // 有些返回不是标准 JSON（前面有 callback），简单剥离
       final start = text.indexOf('{');
       final end = text.lastIndexOf('}');
       if (start < 0 || end < 0) return [];

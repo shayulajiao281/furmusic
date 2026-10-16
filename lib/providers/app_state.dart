@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 
 const _kStorageKey = 'furkid_music_v2';
+const _kHideVipKey = 'furkid_hide_vip';
 
 final sharedPrefsProvider = Provider<SharedPreferences>((ref) {
   throw UnimplementedError('必须在 main.dart 里 override');
@@ -14,10 +15,14 @@ class AppState {
   final List<Song> favoriteSongs;
   final List<Song> recentSongs;
 
+  /// ★ 是否隐藏 VIP 歌曲
+  final bool hideVip;
+
   AppState({
     List<Song>? localSongs,
     List<Song>? favoriteSongs,
     List<Song>? recentSongs,
+    this.hideVip = false,
   }) : localSongs = localSongs ?? [],
        favoriteSongs = favoriteSongs ?? [],
        recentSongs = recentSongs ?? [];
@@ -39,6 +44,18 @@ class AppState {
         .map((e) => Song.fromJson(e as Map<String, dynamic>))
         .toList(),
   );
+
+  AppState copyWith({
+    List<Song>? localSongs,
+    List<Song>? favoriteSongs,
+    List<Song>? recentSongs,
+    bool? hideVip,
+  }) => AppState(
+    localSongs: localSongs ?? this.localSongs,
+    favoriteSongs: favoriteSongs ?? this.favoriteSongs,
+    recentSongs: recentSongs ?? this.recentSongs,
+    hideVip: hideVip ?? this.hideVip,
+  );
 }
 
 class AppStateNotifier extends Notifier<AppState> {
@@ -47,69 +64,65 @@ class AppStateNotifier extends Notifier<AppState> {
   @override
   AppState build() {
     _prefs = ref.read(sharedPrefsProvider);
+
+    // 读 hideVip 开关（独立 key，不进 json）
+    final hideVip = _prefs.getBool(_kHideVipKey) ?? false;
+
     final raw = _prefs.getString(_kStorageKey);
     if (raw != null && raw.isNotEmpty) {
       try {
-        return AppState.fromJson(jsonDecode(raw));
+        final parsed = AppState.fromJson(jsonDecode(raw));
+        return parsed.copyWith(hideVip: hideVip);
       } catch (_) {}
     }
-    return AppState();
+    return AppState(hideVip: hideVip);
   }
 
   void _persist() => _prefs.setString(_kStorageKey, jsonEncode(state.toJson()));
 
-  /// 覆盖本地音乐（不动收藏和最近）
+  /// ★ 切换"隐藏 VIP"
+  void setHideVip(bool value) {
+    _prefs.setBool(_kHideVipKey, value);
+    state = state.copyWith(hideVip: value);
+  }
+
   void setLocalSongs(List<Song> newSongs) {
-    state = AppState(
-      localSongs: newSongs,
-      favoriteSongs: state.favoriteSongs,
-      recentSongs: state.recentSongs,
-    );
+    state = state.copyWith(localSongs: newSongs);
     _persist();
   }
 
-  /// 切换收藏
   void toggleFavorite(Song song) {
-    final exists = state.favoriteSongs.any((s) => s.id == song.id);
+    final exists = state.favoriteSongs.any((s) => s.globalId == song.globalId);
 
     List<Song> newFavs;
     if (exists) {
-      newFavs = state.favoriteSongs.where((s) => s.id != song.id).toList();
+      newFavs = state.favoriteSongs
+          .where((s) => s.globalId != song.globalId)
+          .toList();
     } else {
       newFavs = [...state.favoriteSongs, song.copyWith(isFavorite: true)];
     }
 
-    state = AppState(
-      localSongs: state.localSongs,
-      favoriteSongs: newFavs,
-      recentSongs: state.recentSongs,
-    );
+    state = state.copyWith(favoriteSongs: newFavs);
     _persist();
   }
 
-  /// 记录播放
   void addRecent(Song song) {
-    final list = [song, ...state.recentSongs.where((s) => s.id != song.id)];
-    state = AppState(
-      localSongs: state.localSongs,
-      favoriteSongs: state.favoriteSongs,
-      recentSongs: list.take(100).toList(),
-    );
+    final list = [
+      song,
+      ...state.recentSongs.where((s) => s.globalId != song.globalId),
+    ];
+    state = state.copyWith(recentSongs: list.take(100).toList());
     _persist();
   }
 
-  /// 清空播放历史
   void clearRecent() {
-    state = AppState(
-      localSongs: state.localSongs,
-      favoriteSongs: state.favoriteSongs,
-      recentSongs: [],
-    );
+    state = state.copyWith(recentSongs: []);
     _persist();
   }
 
-  bool isFavorite(String songId) =>
-      state.favoriteSongs.any((s) => s.id == songId);
+  bool isFavorite(String globalId) =>
+      state.favoriteSongs.any((s) => s.globalId == globalId);
 }
 
 final appStateProvider = NotifierProvider<AppStateNotifier, AppState>(
@@ -124,4 +137,9 @@ final favoriteSongsProvider = Provider(
 );
 final recentSongsProvider = Provider(
   (ref) => ref.watch(appStateProvider).recentSongs,
+);
+
+/// ★ 全局读取：是否隐藏 VIP
+final hideVipProvider = Provider<bool>(
+  (ref) => ref.watch(appStateProvider).hideVip,
 );

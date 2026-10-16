@@ -16,7 +16,6 @@ class RecommendCategory {
   const RecommendCategory(this.id, this.label, this.emoji, this.keywords);
 }
 
-/// 只做网易云 + QQ 的推荐，不用 B 站
 const _categories = [
   RecommendCategory('hot', '热门推荐', '🔥', [
     '热门华语歌曲',
@@ -81,7 +80,6 @@ const _categories = [
   ]),
 ];
 
-/// 每行拿几首
 const int _perCategory = 6;
 
 class MusicPage extends ConsumerStatefulWidget {
@@ -94,8 +92,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
   final Map<String, List<Song>> _recommendsByCategory = {};
   final Map<String, String> _keywordByCategory = {};
   bool _loading = false;
-
-  /// 跨分类去重：key = "title|artist" 归一化
   final Set<String> _shownKeys = {};
 
   @override
@@ -110,8 +106,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
   Future<void> _loadAllCategories() async {
     if (mounted) setState(() => _loading = true);
     _shownKeys.clear();
-
-    // 串行加载（每个分类里再并发查两个源），保持关键词轮换
     for (final cat in _categories) {
       await _loadCategory(cat.id);
     }
@@ -123,11 +117,9 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     final kw = cat.keywords[Random().nextInt(cat.keywords.length)];
     final page = 1 + Random().nextInt(3);
 
-    // ★ 只取网易云 + QQ，不用 B 站
     final netease = ref.read(sourceByIdProvider)('netease');
     final qq = ref.read(sourceByIdProvider)('qq');
 
-    // 并发查询两个源；单个失败不影响另一个
     final results = await Future.wait<List<Song>>([
       netease
           .search(kw, page: page, pageSize: 30)
@@ -151,7 +143,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
       '📋 [推荐:$categoryId] "$kw" → 网易 ${neSongs.length} 条 / QQ ${qqSongs.length} 条',
     );
 
-    // ★ 交替混合：ne[0], qq[0], ne[1], qq[1]...
     final interleaved = <Song>[];
     final maxLen = max(neSongs.length, qqSongs.length);
     for (var i = 0; i < maxLen; i++) {
@@ -159,7 +150,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
       if (i < qqSongs.length) interleaved.add(qqSongs[i]);
     }
 
-    // 去重 + 排除已经显示过的
+    // 过滤 VIP 由 build 里做，这里只做去重 + 数量限制
     final picked = <Song>[];
     for (final s in interleaved) {
       if (picked.length >= _perCategory) break;
@@ -183,6 +174,12 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     final player = ref.watch(playerStateProvider);
     final recent = ref.watch(recentSongsProvider);
     final favorites = ref.watch(favoriteSongsProvider);
+    final hideVip = ref.watch(hideVipProvider);
+
+    // ★ 最近播放里也过滤
+    final visibleRecent = hideVip
+        ? recent.where((s) => !s.isVip).toList()
+        : recent;
 
     return Container(
       color: AppColors.bg,
@@ -226,7 +223,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 ),
               ),
             ),
-            if (recent.isNotEmpty) ...[
+            if (visibleRecent.isNotEmpty) ...[
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(20, 8, 20, 10),
@@ -243,7 +240,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        '${recent.length} 首',
+                        '${visibleRecent.length} 首',
                         style: const TextStyle(
                           fontSize: 11.5,
                           color: AppColors.muted,
@@ -254,27 +251,34 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 ),
               ),
               SliverList(
-                delegate: SliverChildBuilderDelegate((_, i) {
-                  final s = recent[i];
-                  final isFav = favorites.any((f) => f.globalId == s.globalId);
-                  final displaySong = s.copyWith(isFavorite: isFav);
-                  final active = player.current?.globalId == s.globalId;
-                  final isLoadingThis = player.isLoading && active;
+                delegate: SliverChildBuilderDelegate(
+                  (_, i) {
+                    final s = visibleRecent[i];
+                    final isFav = favorites.any(
+                      (f) => f.globalId == s.globalId,
+                    );
+                    final displaySong = s.copyWith(isFavorite: isFav);
+                    final active = player.current?.globalId == s.globalId;
+                    final isLoadingThis = player.isLoading && active;
 
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: SongTile(
-                      song: displaySong,
-                      active: active,
-                      loading: isLoadingThis,
-                      onTap: () {
-                        playerNotifier.playSong(s, queue: recent);
-                        appNotifier.addRecent(s);
-                      },
-                      onFavorite: () => appNotifier.toggleFavorite(s),
-                    ),
-                  );
-                }, childCount: recent.length > 3 ? 3 : recent.length),
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: SongTile(
+                        song: displaySong,
+                        active: active,
+                        loading: isLoadingThis,
+                        onTap: () {
+                          playerNotifier.playSong(s, queue: visibleRecent);
+                          appNotifier.addRecent(s);
+                        },
+                        onFavorite: () => appNotifier.toggleFavorite(s),
+                      ),
+                    );
+                  },
+                  childCount: visibleRecent.length > 3
+                      ? 3
+                      : visibleRecent.length,
+                ),
               ),
             ],
             const SliverToBoxAdapter(
@@ -300,6 +304,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                   favorites,
                   playerNotifier,
                   appNotifier,
+                  hideVip,
                 ),
               ),
             ),
@@ -317,8 +322,11 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     List<Song> favorites,
     PlayerNotifier playerNotifier,
     AppStateNotifier appNotifier,
+    bool hideVip,
   ) {
-    final songs = _recommendsByCategory[cat.id] ?? [];
+    final rawSongs = _recommendsByCategory[cat.id] ?? [];
+    // ★ 过滤 VIP
+    final songs = hideVip ? rawSongs.where((s) => !s.isVip).toList() : rawSongs;
     final keyword = _keywordByCategory[cat.id] ?? '';
 
     return Padding(

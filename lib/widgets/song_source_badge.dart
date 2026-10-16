@@ -2,7 +2,12 @@ import 'package:flutter/cupertino.dart';
 
 class SongSourceBadge extends StatelessWidget {
   final String source;
-  const SongSourceBadge({super.key, required this.source});
+  final bool showVip;
+  const SongSourceBadge({
+    super.key,
+    required this.source,
+    this.showVip = false,
+  });
 
   static const _meta = {
     'bilibili': ('B站', Color(0xFFFB7299)),
@@ -15,9 +20,19 @@ class SongSourceBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final meta = _meta[source];
-    if (meta == null) return const SizedBox.shrink();
-    final (label, color) = meta;
+    if (meta == null && !showVip) return const SizedBox.shrink();
 
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (meta != null) _badge(meta.$1, meta.$2),
+        if (meta != null && showVip) const SizedBox(width: 4),
+        if (showVip) _vipBadge(),
+      ],
+    );
+  }
+
+  Widget _badge(String label, Color color) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
       decoration: BoxDecoration(
@@ -32,6 +47,37 @@ class SongSourceBadge extends StatelessWidget {
           color: color,
           height: 1.2,
         ),
+      ),
+    );
+  }
+
+  /// ★ VIP 徽章：金色渐变 + 星形图标
+  Widget _vipBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFE0A3), Color(0xFFFFC24B)],
+        ),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: const [
+          // ★ 用 star_fill 代替不存在的 crown_fill
+          Icon(CupertinoIcons.star_fill, size: 8, color: Color(0xFF7A4A00)),
+          SizedBox(width: 2),
+          Text(
+            'VIP',
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF7A4A00),
+              height: 1.2,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
       ),
     );
   }
