@@ -1,6 +1,6 @@
 # furmusic
 
-A new Flutter project.
+哎哟你干嘛~
 
 ## Getting Started
 
