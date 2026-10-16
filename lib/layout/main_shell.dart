@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../providers/player_state.dart';
 import '../theme/app_colors.dart';
+import '../widgets/app_toast.dart';
 import '../widgets/mini_player.dart';
 
 class MainShell extends ConsumerWidget {
@@ -22,6 +23,15 @@ class MainShell extends ConsumerWidget {
       playerStateProvider.select((s) => s.current != null),
     );
     final contentBottomPadding = tabbarHeight + (hasSong ? _miniHeight : 0);
+
+    // ★ 监听播放错误 → 顶部 Toast
+    ref.listen<int>(playerStateProvider.select((s) => s.errorId), (prev, next) {
+      if (prev == next) return;
+      final msg = ref.read(playerStateProvider).lastError;
+      if (msg != null && msg.isNotEmpty) {
+        showAppToast(context, msg);
+      }
+    });
 
     return MediaQuery.removeViewInsets(
       context: context,
