@@ -4,6 +4,7 @@ import '../models/song.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
 import '../providers/music_sources.dart';
+import '../services/music_source.dart';
 import '../theme/app_colors.dart';
 import '../widgets/song_tile.dart';
 
@@ -15,24 +16,46 @@ class DiscoverPage extends ConsumerStatefulWidget {
 
 class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   final _searchCtrl = TextEditingController();
+  final _scrollCtrl = ScrollController();
 
-  List<Song> _results = [];
+  /// 全部结果（已跨源去重）
+  final List<Song> _results = [];
+  final Set<String> _seenIds = {};
+
   String _currentKeyword = '';
-  bool _loading = false;
+  bool _loading = false; // 首搜
+  bool _loadingMore = false; // 上拉加载
   bool _searched = false;
 
-  /// null = 全部（聚合），否则只搜这一个源
+  /// 每个源的分页状态
+  final Map<String, int> _srcPage = {}; // source.id → 已加载到第几页
+  final Map<String, bool> _srcHasMore = {}; // source.id → 是否还有更多
+
   String? _filterSource;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollCtrl.addListener(_onScroll);
+  }
 
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _scrollCtrl.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scrollCtrl.hasClients) return;
+    final pos = _scrollCtrl.position;
+    if (pos.pixels >= pos.maxScrollExtent - 300) {
+      _loadMore();
+    }
   }
 
   List<Song> _displayResults(bool hideVip) {
     var list = _results;
-    // 单源搜索时 _results 已经是该源的，这里是保险
     if (_filterSource != null) {
       list = list.where((s) => s.source == _filterSource).toList();
     }
@@ -42,15 +65,18 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     return list;
   }
 
-  /// 点 chip：切换源 → 如果已经搜过，自动重搜
-  void _selectSource(String? source) {
-    if (_filterSource == source) return;
-    setState(() => _filterSource = source);
-    if (_currentKeyword.isNotEmpty) {
-      _search();
+  /// 当前显示的内容底部是否还需要显示"上拉加载更多"
+  bool get _shouldShowFooter {
+    if (!_searched) return false;
+    if (_filterSource == null) {
+      return _srcHasMore.values.any((v) => v);
     }
+    return _srcHasMore[_filterSource] ?? false;
   }
 
+  // ═══════════════════════════════════════════
+  // 首搜：并发拉所有源第 1 页
+  // ═══════════════════════════════════════════
   Future<void> _search() async {
     final kw = _searchCtrl.text.trim();
     if (kw.isEmpty) return;
@@ -59,45 +85,70 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     setState(() {
       _loading = true;
       _searched = true;
-      _results = [];
+      _results.clear();
+      _seenIds.clear();
       _currentKeyword = kw;
+      _srcPage.clear();
+      _srcHasMore.clear();
     });
 
-    if (_filterSource == null) {
-      // ── 全部：聚合搜索，流式返回 ──
-      final aggregator = ref.read(aggregateSearchProvider);
-      await aggregator.search(
-        kw,
-        page: 1,
-        onPartial: (partial) {
-          if (!mounted) return;
-          setState(() {
-            _results = partial;
-            _loading = false;
-          });
-        },
-      );
-    } else {
-      // ── 单源：只搜这一个 ──
-      final source = ref.read(sourceByIdProvider)(_filterSource!);
-      try {
-        final r = await source.search(kw, page: 1, pageSize: 30);
-        if (!mounted) return;
-        setState(() {
-          _results = r.songs;
-          _loading = false;
-        });
-      } catch (e) {
-        print('❌ 单源搜索失败 [${_filterSource}]: $e');
-        if (!mounted) return;
-        setState(() {
-          _results = [];
-          _loading = false;
-        });
-      }
-    }
+    final sources = ref.read(allSourcesProvider);
+    await Future.wait(sources.map((s) => _fetchPage(s, 1)));
 
-    if (mounted) setState(() => _loading = false);
+    if (!mounted) return;
+    setState(() => _loading = false);
+  }
+
+  // ═══════════════════════════════════════════
+  // 上拉加载：按当前模式决定拉哪些源
+  // ═══════════════════════════════════════════
+  Future<void> _loadMore() async {
+    if (_loadingMore || _loading) return;
+    if (_currentKeyword.isEmpty) return;
+    if (!_shouldShowFooter) return;
+
+    final allSources = ref.read(allSourcesProvider);
+    final pool = _filterSource == null
+        ? allSources
+        : allSources.where((s) => s.id == _filterSource).toList();
+
+    final targets = pool.where((s) => _srcHasMore[s.id] ?? false).toList();
+    if (targets.isEmpty) return;
+
+    setState(() => _loadingMore = true);
+
+    await Future.wait(
+      targets.map((s) {
+        final next = (_srcPage[s.id] ?? 1) + 1;
+        return _fetchPage(s, next);
+      }),
+    );
+
+    if (!mounted) return;
+    setState(() => _loadingMore = false);
+  }
+
+  /// 拉某个源的某一页
+  Future<void> _fetchPage(MusicSource source, int page) async {
+    try {
+      final r = await source.search(_currentKeyword, page: page, pageSize: 20);
+      if (!mounted) return;
+      setState(() {
+        for (final s in r.songs) {
+          if (_seenIds.add(s.globalId)) {
+            _results.add(s);
+          }
+        }
+        _srcPage[source.id] = page;
+        _srcHasMore[source.id] = r.hasMore;
+      });
+      print(
+        '📥 [${source.id}] 第 $page 页 → 新增 ${r.songs.length} 条，hasMore=${r.hasMore}',
+      );
+    } catch (e) {
+      print('❌ [${source.id}] 第 $page 页失败: $e');
+      _srcHasMore[source.id] = false;
+    }
   }
 
   void _playSong(Song song, List<Song> queue) {
@@ -120,16 +171,18 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     });
   }
 
+  void _selectSource(String? source) {
+    if (_filterSource == source) return;
+    setState(() => _filterSource = source);
+  }
+
   @override
   Widget build(BuildContext context) {
     final player = ref.watch(playerStateProvider);
     final favorites = ref.watch(favoriteSongsProvider);
     final hideVip = ref.watch(hideVipProvider);
     final results = _displayResults(hideVip);
-
-    final allHiddenByVip = _results.isNotEmpty && results.isEmpty && hideVip;
-    final sourceEmpty =
-        _searched && _results.isEmpty && !_loading && _filterSource != null;
+    final showFooter = _shouldShowFooter;
 
     return Container(
       color: AppColors.bg,
@@ -209,7 +262,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
               ),
             ),
 
-            // ★ 音源 chips：只要搜过就显示（哪怕结果为空）
+            // 源筛选 chips
             if (_searched)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
@@ -234,14 +287,16 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
               child: _loading
                   ? const Center(child: CupertinoActivityIndicator())
                   : results.isEmpty
-                  ? _empty(
-                      allHiddenByVip: allHiddenByVip,
-                      sourceEmpty: sourceEmpty,
-                    )
+                  ? _empty()
                   : ListView.builder(
+                      controller: _scrollCtrl,
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-                      itemCount: results.length,
+                      itemCount: results.length + (showFooter ? 1 : 0),
                       itemBuilder: (_, i) {
+                        if (i >= results.length) {
+                          return _footer();
+                        }
+
                         final s = results[i];
                         final isFav = favorites.any(
                           (f) => f.globalId == s.globalId,
@@ -268,12 +323,25 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     );
   }
 
+  Widget _footer() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 20),
+      child: Center(
+        child: _loadingMore
+            ? const CupertinoActivityIndicator(radius: 8)
+            : const Text(
+                '上拉加载更多',
+                style: TextStyle(fontSize: 12, color: AppColors.muted),
+              ),
+      ),
+    );
+  }
+
   Widget _chip(String label, String? source) {
     final selected = _filterSource == source;
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: GestureDetector(
-        // ★ 切换源 → 自动重搜
         onTap: () => _selectSource(source),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -298,53 +366,26 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     );
   }
 
-  Widget _empty({required bool allHiddenByVip, required bool sourceEmpty}) {
-    final String text;
-    if (allHiddenByVip) {
-      text = '搜到的都是 VIP 歌曲\n（可在「我的」里关闭隐藏 VIP）';
-    } else if (sourceEmpty) {
-      final srcName = _sourceName(_filterSource!);
-      text = '$srcName 没有返回结果\n换个源试试，或点「全部」';
-    } else if (_searched) {
-      text = '没有找到相关歌曲';
-    } else {
-      text = '搜索全网音乐';
-    }
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            _searched ? CupertinoIcons.search : CupertinoIcons.compass,
-            size: 50,
+  Widget _empty() => Center(
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          _searched ? CupertinoIcons.search : CupertinoIcons.compass,
+          size: 50,
+          color: AppColors.muted,
+        ),
+        const SizedBox(height: 14),
+        Text(
+          _searched ? '没有找到相关歌曲' : '搜索全网音乐',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 13.5,
             color: AppColors.muted,
+            height: 1.7,
           ),
-          const SizedBox(height: 14),
-          Text(
-            text,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 13.5,
-              color: AppColors.muted,
-              height: 1.7,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _sourceName(String id) {
-    switch (id) {
-      case 'bilibili':
-        return 'B站';
-      case 'netease':
-        return '网易云';
-      case 'qq':
-        return 'QQ音乐';
-      default:
-        return id;
-    }
-  }
+        ),
+      ],
+    ),
+  );
 }

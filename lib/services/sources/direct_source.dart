@@ -37,24 +37,28 @@ abstract class DirectSource implements MusicSource {
         print(
           '❌ [$id] 搜索 HTTP ${res.statusCode} (${sw.elapsedMilliseconds}ms)',
         );
-        return const SearchResult(songs: []);
+        return const SearchResult(songs: [], hasMore: false);
       }
 
       final json = jsonDecode(utf8.decode(res.bodyBytes));
-      final result = parseSearchResult(json);
+      final result = parseSearchResult(json, page, pageSize);
       print(
-        '✅ [$id] 搜索 "${keyword}" → ${result.songs.length} 条 (${sw.elapsedMilliseconds}ms)',
+        '✅ [$id] 搜索 "$keyword" p$page → ${result.songs.length} 条, hasMore=${result.hasMore} (${sw.elapsedMilliseconds}ms)',
       );
       return result;
     } catch (e) {
       sw.stop();
       print('❌ [$id] 搜索异常: $e (${sw.elapsedMilliseconds}ms)');
-      return const SearchResult(songs: []);
+      return const SearchResult(songs: [], hasMore: false);
     }
   }
 
-  /// 子类解析 JSON 并返回统一格式
-  SearchResult parseSearchResult(Map<String, dynamic> json);
+  /// ★ 子类解析 JSON 并返回统一格式（现在带上 page / pageSize，可以算 hasMore）
+  SearchResult parseSearchResult(
+    Map<String, dynamic> json,
+    int page,
+    int pageSize,
+  );
 
   @override
   Future<String?> getSongUrl(String songId) async {
@@ -83,7 +87,7 @@ abstract class DirectSource implements MusicSource {
   @override
   Map<String, String> get audioHeaders => headers;
 
-  /// LRC 解析工具（子类可以直接调用）
+  /// LRC 解析工具
   List<MapEntry<double, String>> parseLrc(String lrc) {
     final lines = <MapEntry<double, String>>[];
     final regex = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');

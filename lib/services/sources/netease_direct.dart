@@ -33,9 +33,17 @@ class NeteaseDirect extends DirectSource {
   }
 
   @override
-  SearchResult parseSearchResult(Map<String, dynamic> json) {
+  SearchResult parseSearchResult(
+    Map<String, dynamic> json,
+    int page,
+    int pageSize,
+  ) {
     try {
-      final songs = (json['result']?['songs'] as List? ?? []).map((item) {
+      final result = json['result'];
+      final songCount = (result?['songCount'] as int?) ?? 0;
+      final rawSongs = result?['songs'] as List? ?? [];
+
+      final songs = rawSongs.map((item) {
         final fee = (item['fee'] as int?) ?? 0;
         final isVip = fee != 0;
 
@@ -53,10 +61,14 @@ class NeteaseDirect extends DirectSource {
           isVip: isVip,
         );
       }).toList();
-      return SearchResult(songs: songs, hasMore: false);
+
+      final offset = (page - 1) * pageSize;
+      final hasMore = offset + songs.length < songCount;
+
+      return SearchResult(songs: songs, hasMore: hasMore);
     } catch (e) {
       print('❌ [netease] 解析搜索 JSON 出错: $e');
-      return const SearchResult(songs: []);
+      return const SearchResult(songs: [], hasMore: false);
     }
   }
 

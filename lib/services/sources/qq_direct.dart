@@ -38,10 +38,17 @@ class QQDirect extends DirectSource {
   }
 
   @override
-  SearchResult parseSearchResult(Map<String, dynamic> json) {
+  SearchResult parseSearchResult(
+    Map<String, dynamic> json,
+    int page,
+    int pageSize,
+  ) {
     try {
-      final list = json['data']?['song']?['list'] as List? ?? [];
-      final songs = list.map((item) {
+      final songData = json['data']?['song'];
+      final totalnum = (songData?['totalnum'] as int?) ?? 0;
+      final rawList = songData?['list'] as List? ?? [];
+
+      final songs = rawList.map((item) {
         final singers =
             (item['singer'] as List?)?.map((s) => s['name']).join(', ') ?? '';
         final albumMid = item['albummid']?.toString() ?? '';
@@ -65,17 +72,20 @@ class QQDirect extends DirectSource {
           isVip: isVip,
         );
       }).toList();
-      return SearchResult(songs: songs, hasMore: false);
+
+      final offset = (page - 1) * pageSize;
+      final hasMore = offset + songs.length < totalnum;
+
+      return SearchResult(songs: songs, hasMore: hasMore);
     } catch (e) {
       print('❌ [qq] 解析搜索 JSON 出错: $e');
-      return const SearchResult(songs: []);
+      return const SearchResult(songs: [], hasMore: false);
     }
   }
 
   @override
   Future<String?> getSongUrlById(String songId) async {
     try {
-      // 如果已登录，uin 用真实 cookie 里的；否则 0
       String uin = '0';
       final c = AuthStore.getCookie('qq');
       if (c != null) {
