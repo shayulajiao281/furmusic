@@ -59,30 +59,38 @@ class PlayHistoryPage extends ConsumerWidget {
       ),
       child: Container(
         color: AppColors.bg,
-        child: recent.isEmpty
-            ? _empty()
-            : ListView.builder(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-                itemCount: recent.length,
-                itemBuilder: (_, i) {
-                  final s = recent[i];
-                  final isFav = favorites.any((f) => f.id == s.id);
-                  final displaySong = s.copyWith(isFavorite: isFav);
-                  final isLoadingThis =
-                      player.isLoading && player.current?.id == s.id;
+        // ★ 关键：SafeArea 在 child 里读 MediaQuery，
+        // 此时 padding.top 已经包含「状态栏 + 导航栏」，列表自动避开
+        child: SafeArea(
+          top: true,
+          bottom: false,
+          child: recent.isEmpty
+              ? _empty()
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                  itemCount: recent.length,
+                  itemBuilder: (_, i) {
+                    final s = recent[i];
+                    final isFav = favorites.any(
+                      (f) => f.globalId == s.globalId,
+                    );
+                    final displaySong = s.copyWith(isFavorite: isFav);
+                    final active = player.current?.globalId == s.globalId;
+                    final isLoadingThis = player.isLoading && active;
 
-                  return SongTile(
-                    song: displaySong,
-                    active: player.current?.id == s.id,
-                    loading: isLoadingThis,
-                    onTap: () {
-                      playerNotifier.playSong(s, queue: recent);
-                      appNotifier.addRecent(s);
-                    },
-                    onFavorite: () => appNotifier.toggleFavorite(s),
-                  );
-                },
-              ),
+                    return SongTile(
+                      song: displaySong,
+                      active: active,
+                      loading: isLoadingThis,
+                      onTap: () {
+                        playerNotifier.playSong(s, queue: recent);
+                        appNotifier.addRecent(s);
+                      },
+                      onFavorite: () => appNotifier.toggleFavorite(s),
+                    );
+                  },
+                ),
+        ),
       ),
     );
   }
