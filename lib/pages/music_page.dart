@@ -48,10 +48,9 @@ const _categories = [
 
 const int _perCategory = 6;
 
-/// ★ 缓存 key 和过期时间（现在是 1 小时）
 const _kCacheKey = 'furkid_recommend_cache_v1';
 const _kCacheTimeKey = 'furkid_recommend_cache_time';
-const _cacheValidMs = 60 * 60 * 1000; // ★ 1 小时
+const _cacheValidMs = 60 * 60 * 1000; // 1 小时
 
 class MusicPage extends ConsumerStatefulWidget {
   const MusicPage({super.key});
@@ -71,9 +70,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     _bootstrap();
   }
 
-  // ═══════════════════════════════════════════
-  // 启动：先看缓存，命中就直接用
-  // ═══════════════════════════════════════════
   Future<void> _bootstrap() async {
     final loadedFromCache = await _tryLoadCache();
     if (loadedFromCache) {
@@ -214,10 +210,20 @@ class _MusicPageState extends ConsumerState<MusicPage> {
   @override
   Widget build(BuildContext context) {
     final appNotifier = ref.read(appStateProvider.notifier);
-    final player = ref.watch(playerStateProvider);
     final recent = ref.watch(recentSongsProvider);
     final favorites = ref.watch(favoriteSongsProvider);
     final hideVip = ref.watch(hideVipProvider);
+
+    // ★ 只订阅关键字段，拦截 position 通知
+    final currentId = ref.watch(
+      playerStateProvider.select((s) => s.current?.globalId),
+    );
+    final loadingId = ref.watch(
+      playerStateProvider.select((s) => s.isLoading ? s.current?.globalId : null),
+    );
+
+    // ★ 收藏用 Set
+    final favIds = favorites.map((s) => s.globalId).toSet();
 
     final visibleRecent =
         hideVip ? recent.where((s) => !s.isVip).toList() : recent;
@@ -288,19 +294,12 @@ class _MusicPageState extends ConsumerState<MusicPage> {
               SliverList(
                 delegate: SliverChildBuilderDelegate((_, i) {
                   final s = visibleRecent[i];
-                  final isFav = favorites.any(
-                    (f) => f.globalId == s.globalId,
-                  );
-                  final displaySong = s.copyWith(isFavorite: isFav);
-                  final active = player.current?.globalId == s.globalId;
-                  final isLoadingThis = player.isLoading && active;
-
                   return Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: SongTile(
-                      song: displaySong,
-                      active: active,
-                      loading: isLoadingThis,
+                      song: s.copyWith(isFavorite: favIds.contains(s.globalId)),
+                      active: currentId == s.globalId,
+                      loading: loadingId == s.globalId,
                       onTap: () => playOrOpen(
                         context,
                         ref,
@@ -334,8 +333,9 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 child: _categoryCard(
                   context,
                   cat,
-                  player,
-                  favorites,
+                  currentId,
+                  loadingId,
+                  favIds,
                   appNotifier,
                   hideVip,
                 ),
@@ -351,8 +351,9 @@ class _MusicPageState extends ConsumerState<MusicPage> {
   Widget _categoryCard(
     BuildContext context,
     RecommendCategory cat,
-    PlayerState player,
-    List<Song> favorites,
+    String? currentId,
+    String? loadingId,
+    Set<String> favIds,
     AppStateNotifier appNotifier,
     bool hideVip,
   ) {
@@ -424,12 +425,9 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 separatorBuilder: (_, __) => const SizedBox(width: 12),
                 itemBuilder: (_, i) {
                   final s = songs[i];
-                  final isFav = favorites.any(
-                    (f) => f.globalId == s.globalId,
-                  );
-                  final displaySong = s.copyWith(isFavorite: isFav);
-                  final active = player.current?.globalId == s.globalId;
-                  final isLoadingThis = player.isLoading && active;
+                  final displaySong = s.copyWith(isFavorite: favIds.contains(s.globalId));
+                  final active = currentId == s.globalId;
+                  final isLoadingThis = loadingId == s.globalId;
 
                   return _songCard(
                     displaySong,

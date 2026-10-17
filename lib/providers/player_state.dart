@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
@@ -88,9 +89,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
   bool _switching = false;
   DateTime? _switchLockTime;
 
-  /// ★ 防"播完"事件重复触发
   bool _completing = false;
-
   static const _lockTimeout = 20;
 
   @override
@@ -146,7 +145,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
       }
     });
 
-    // ★ 播完一首 → 手动处理
     _player.processingStateStream.listen((s) {
       if (s == ProcessingState.completed) {
         _onSongCompleted();
@@ -157,9 +155,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
   }
 
   // ═══════════════════════════════════════════
-  // ★ 播完当前歌：由这里接管
-  //   - 单曲循环：重播当前
-  //   - 列表循环 / 随机：切下一首
+  // 播完当前歌：由这里接管
   // ═══════════════════════════════════════════
   Future<void> _onSongCompleted() async {
     if (_completing) return;
@@ -173,40 +169,70 @@ class PlayerNotifier extends Notifier<PlayerState> {
           await _player.seek(Duration.zero);
           unawaited(_player.play());
           print('🔂 [player] 单曲循环：重播当前');
+          return;
         } catch (e) {
-          print('❌ [player] 重播失败: $e');
+          print('❌ [player] 重播失败，尝试切下一首: $e');
+          // 失败则降级去切下一首
         }
-        return;
       }
 
-      // 列表循环 / 随机：切下一首
-      final cur = state.current;
-      if (cur == null || _queue.isEmpty) return;
+      // 列表循环 / 随机 / 单曲失败：自动切下一首
+      await _autoPlayNext();
+    } finally {
+      _completing = false;
+    }
+  }
 
-      final idx = _queue.indexWhere((s) => s.globalId == cur.globalId);
+  /// ★ 自动切下一首：遇到播不了的自动跳过
+  Future<void> _autoPlayNext() async {
+    if (_queue.isEmpty) return;
+    var cur = state.current;
+    if (cur == null) return;
+
+    int attempts = 0;
+    final maxAttempts = _queue.length;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      
+      // 关键：将 cur 提取为 final，避免闭包类型提升失效
+      final currentSong = cur!; 
+      
+      final idx = _queue.indexWhere((s) => s.globalId == currentSong.globalId);
       if (idx < 0) return;
 
       int nextIdx;
-
-      if (state.mode == PlayMode.shuffle) {
-        // 随机：随便选一首（不等于当前）
-        if (_queue.length == 1) {
-          nextIdx = 0;
-        } else {
-          final rand = DateTime.now().millisecondsSinceEpoch % _queue.length;
-          nextIdx = rand == idx ? (idx + 1) % _queue.length : rand;
-        }
+      if (state.mode == PlayMode.shuffle && _queue.length > 1) {
+        final rand = DateTime.now().millisecondsSinceEpoch % _queue.length;
+        nextIdx = rand == idx ? (idx + 1) % _queue.length : rand;
       } else {
-        // 列表循环：下一首，到底回第一首
         nextIdx = idx + 1;
         if (nextIdx >= _queue.length) nextIdx = 0;
       }
 
-      print('⏭ [player] 自动切到队列第 $nextIdx 首');
-      await _playIndex(nextIdx);
-    } finally {
-      _completing = false;
+      final nextSong = _queue[nextIdx];
+      print('⏭ [player] 自动切到队列第 $nextIdx 首: ${nextSong.title}');
+
+      // 传 fromAutoPlay: true，告诉 playSong 失败时不要弹 Toast
+      final ok = await playSong(nextSong, queue: _queue, fromAutoPlay: true);
+      if (ok) {
+        return; // 播放成功，结束循环
+      }
+
+      // 如果在此期间用户手动切了歌，打断当前自动循环
+      if (state.current?.globalId != currentSong.globalId) {
+        print('⚠️ [player] 自动切歌被用户打断');
+        return;
+      }
+
+      // 播放失败，继续尝试下一首
+      print('⚠️ [player] 自动切歌失败，跳过到下一首');
+      cur = nextSong;
     }
+
+    print('❌ [player] 队列里所有歌都播不了，暂停');
+    _forceStop();
+    state = state.copyWith(isLoading: false, isPlaying: false);
   }
 
   // ═══ 锁 ═══
@@ -313,13 +339,10 @@ class PlayerNotifier extends Notifier<PlayerState> {
     } catch (_) {}
   }
 
-  // ★ 关键：单曲模式 → just_audio 只认 one/off
-  //   列表循环 / 随机 → 关掉 just_audio 的循环，由我们手动切
   void _applyModeToPlayer(PlayMode mode) {
     switch (mode) {
       case PlayMode.repeatAll:
       case PlayMode.shuffle:
-        // 播完就"停"，由 _onSongCompleted 接管
         _player.setLoopMode(LoopMode.off);
         _player.setShuffleModeEnabled(false);
         break;
@@ -359,15 +382,19 @@ class PlayerNotifier extends Notifier<PlayerState> {
   }
 
   // ═══════════════════════════════════════════
-  // 播放
+  // 播放（返回是否成功）
   // ═══════════════════════════════════════════
-  Future<void> playSong(Song song, {List<Song>? queue}) async {
+  Future<bool> playSong(
+    Song song, {
+    List<Song>? queue,
+    bool fromAutoPlay = false,
+  }) async {
     if (_isSwitching) {
       print('⚠️ [player] 正在切歌，忽略本次点击');
-      return;
+      return false;
     }
     _lock();
-    print('🔒 [player] 加锁，播放 ${song.title}');
+    print('🔒 [player] 加锁，播放 ${song.title}${fromAutoPlay ? " (自动)" : ""}');
 
     try {
       HapticFeedback.mediumImpact();
@@ -411,8 +438,8 @@ class PlayerNotifier extends Notifier<PlayerState> {
         print('❌ [player] 解析失败');
         await _resetPlayer();
         state = state.copyWith(isLoading: false);
-        _reportError(_failReason(song));
-        return;
+        if (!fromAutoPlay) _reportError(_failReason(song));
+        return false;
       }
 
       _targetSongId = song.id;
@@ -425,10 +452,39 @@ class PlayerNotifier extends Notifier<PlayerState> {
         _hasSource = true;
       } catch (e) {
         print('❌ [player] setAudioSource 失败: $e');
+
+        // 坏缓存自动清理重试
+        if (!current.audioPath.startsWith('http')) {
+          print('🔧 [player] 可能是坏缓存，删除后重试');
+          try {
+            final f = File(current.audioPath);
+            if (f.existsSync()) f.deleteSync();
+          } catch (_) {}
+          final retry = await _resolveOne(song).timeout(
+            const Duration(seconds: 20),
+            onTimeout: () => null,
+          );
+          if (retry != null && retry.audioPath.isNotEmpty) {
+            try {
+              await _player
+                  .setAudioSource(_toSource(retry))
+                  .timeout(const Duration(seconds: 20));
+              _hasSource = true;
+              unawaited(_player.play());
+              state = state.copyWith(isLoading: false, isPlaying: true);
+              _persist();
+              _loadLyricAsync(song);
+              return true;
+            } catch (e2) {
+              print('❌ [player] 重试也失败: $e2');
+            }
+          }
+        }
+
         await _resetPlayer();
         state = state.copyWith(isLoading: false, isPlaying: false);
-        _reportError(_failReason(song));
-        return;
+        if (!fromAutoPlay) _reportError(_failReason(song));
+        return false;
       }
 
       unawaited(_player.play());
@@ -440,11 +496,13 @@ class PlayerNotifier extends Notifier<PlayerState> {
       _loadLyricAsync(song);
 
       print('✅ [player] 播放已启动');
+      return true;
     } catch (e) {
       print('❌ [player] playSong 异常: $e');
       await _resetPlayer();
       state = state.copyWith(isLoading: false, isPlaying: false);
-      _reportError('播放失败: $e');
+      if (!fromAutoPlay) _reportError('播放失败: $e');
+      return false;
     } finally {
       _unlock();
       print('🔓 [player] 解锁');

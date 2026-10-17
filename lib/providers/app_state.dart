@@ -14,15 +14,13 @@ class AppState {
   final List<Song> localSongs;
   final List<Song> favoriteSongs;
   final List<Song> recentSongs;
-
-  /// ★ 是否隐藏 VIP 歌曲
   final bool hideVip;
 
   AppState({
     List<Song>? localSongs,
     List<Song>? favoriteSongs,
     List<Song>? recentSongs,
-    this.hideVip = false,
+    this.hideVip = true,
   }) : localSongs = localSongs ?? [],
        favoriteSongs = favoriteSongs ?? [],
        recentSongs = recentSongs ?? [];
@@ -64,9 +62,7 @@ class AppStateNotifier extends Notifier<AppState> {
   @override
   AppState build() {
     _prefs = ref.read(sharedPrefsProvider);
-
-    // 读 hideVip 开关（独立 key，不进 json）
-    final hideVip = _prefs.getBool(_kHideVipKey) ?? false;
+    final hideVip = _prefs.getBool(_kHideVipKey) ?? true;
 
     final raw = _prefs.getString(_kStorageKey);
     if (raw != null && raw.isNotEmpty) {
@@ -78,9 +74,9 @@ class AppStateNotifier extends Notifier<AppState> {
     return AppState(hideVip: hideVip);
   }
 
-  void _persist() => _prefs.setString(_kStorageKey, jsonEncode(state.toJson()));
+  void _persist() =>
+      _prefs.setString(_kStorageKey, jsonEncode(state.toJson()));
 
-  /// ★ 切换"隐藏 VIP"
   void setHideVip(bool value) {
     _prefs.setBool(_kHideVipKey, value);
     state = state.copyWith(hideVip: value);
@@ -93,7 +89,6 @@ class AppStateNotifier extends Notifier<AppState> {
 
   void toggleFavorite(Song song) {
     final exists = state.favoriteSongs.any((s) => s.globalId == song.globalId);
-
     List<Song> newFavs;
     if (exists) {
       newFavs = state.favoriteSongs
@@ -102,7 +97,6 @@ class AppStateNotifier extends Notifier<AppState> {
     } else {
       newFavs = [...state.favoriteSongs, song.copyWith(isFavorite: true)];
     }
-
     state = state.copyWith(favoriteSongs: newFavs);
     _persist();
   }
@@ -129,17 +123,16 @@ final appStateProvider = NotifierProvider<AppStateNotifier, AppState>(
   AppStateNotifier.new,
 );
 
+// ★ 加上 .select()，精准通知
 final localSongsProvider = Provider(
-  (ref) => ref.watch(appStateProvider).localSongs,
+  (ref) => ref.watch(appStateProvider.select((s) => s.localSongs)),
 );
 final favoriteSongsProvider = Provider(
-  (ref) => ref.watch(appStateProvider).favoriteSongs,
+  (ref) => ref.watch(appStateProvider.select((s) => s.favoriteSongs)),
 );
 final recentSongsProvider = Provider(
-  (ref) => ref.watch(appStateProvider).recentSongs,
+  (ref) => ref.watch(appStateProvider.select((s) => s.recentSongs)),
 );
-
-/// ★ 全局读取：是否隐藏 VIP
-final hideVipProvider = Provider<bool>(
-  (ref) => ref.watch(appStateProvider).hideVip,
+final hideVipProvider = Provider(
+  (ref) => ref.watch(appStateProvider.select((s) => s.hideVip)),
 );

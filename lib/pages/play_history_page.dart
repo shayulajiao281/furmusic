@@ -13,28 +13,19 @@ class PlayHistoryPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // ★ 只 watch 数据源，不 watch 整个 player
     final recent = ref.watch(recentSongsProvider);
-
-    // ★ 收藏用 Set（O(1) 查找），不再用 List.any()（O(n)）
+    
     final favIds = ref.watch(
       favoriteSongsProvider.select(
         (list) => list.map((s) => s.globalId).toSet(),
       ),
     );
-
-    // ★ 只订阅"当前歌 id"和"哪首歌在 loading"
-    //   position 每秒变几十次，但这两个值很少变 → 页面几乎不重建
     final currentId = ref.watch(
       playerStateProvider.select((s) => s.current?.globalId),
     );
     final loadingId = ref.watch(
-      playerStateProvider.select(
-        (s) => s.isLoading ? s.current?.globalId : null,
-      ),
+      playerStateProvider.select((s) => s.isLoading ? s.current?.globalId : null),
     );
-
-    // ★ hasSong 独立 select，避免跟着 current 其他字段重建
     final hasSong = ref.watch(
       playerStateProvider.select((s) => s.current != null),
     );
@@ -105,18 +96,23 @@ class PlayHistoryPage extends ConsumerWidget {
                               isFav: favIds.contains(s.globalId),
                               active: currentId == s.globalId,
                               loading: loadingId == s.globalId,
+                              onFav: () => appNotifier.toggleFavorite(s),
                             );
                           },
                         ),
                 ),
               ),
             ),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: const MiniPlayer(),
-            ),
+            if (hasSong)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: RepaintBoundary(
+                  // ★ 开启安全区
+                  child: const MiniPlayer(useSafeArea: true),
+                ),
+              ),
           ],
         ),
       ),
@@ -138,12 +134,12 @@ class PlayHistoryPage extends ConsumerWidget {
   );
 }
 
-/// ★ 每项独立，避免整列表重建
 class _HistoryTile extends ConsumerWidget {
   final Song song;
   final bool isFav;
   final bool active;
   final bool loading;
+  final VoidCallback onFav;
 
   const _HistoryTile({
     super.key,
@@ -151,22 +147,22 @@ class _HistoryTile extends ConsumerWidget {
     required this.isFav,
     required this.active,
     required this.loading,
+    required this.onFav,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return SongTile(
-      song: song.copyWith(isFavorite: isFav),
-      active: active,
-      loading: loading,
-      onTap: () {
-        // 队列 = 最新的最近播放列表
-        final queue = ref.read(recentSongsProvider);
-        playOrOpen(context, ref, song, queue: queue);
-      },
-      onFavorite: () {
-        ref.read(appStateProvider.notifier).toggleFavorite(song);
-      },
+    return RepaintBoundary(
+      child: SongTile(
+        song: song.copyWith(isFavorite: isFav),
+        active: active,
+        loading: loading,
+        onTap: () {
+          final queue = ref.read(recentSongsProvider);
+          playOrOpen(context, ref, song, queue: queue);
+        },
+        onFavorite: onFav,
+      ),
     );
   }
 }

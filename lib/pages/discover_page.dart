@@ -131,9 +131,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
         _srcPage[source.id] = page;
         _srcHasMore[source.id] = r.hasMore;
       });
-      print('📥 [${source.id}] 第 $page 页 → 新增 ${r.songs.length} 条，hasMore=${r.hasMore}');
     } catch (e) {
-      print('❌ [${source.id}] 第 $page 页失败: $e');
       _srcHasMore[source.id] = false;
     }
   }
@@ -158,11 +156,20 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
 
   @override
   Widget build(BuildContext context) {
-    final player = ref.watch(playerStateProvider);
     final favorites = ref.watch(favoriteSongsProvider);
     final hideVip = ref.watch(hideVipProvider);
     final results = _displayResults(hideVip);
     final showFooter = _shouldShowFooter;
+
+    // ★ 精准订阅
+    final currentId = ref.watch(
+      playerStateProvider.select((s) => s.current?.globalId),
+    );
+    final loadingId = ref.watch(
+      playerStateProvider.select((s) => s.isLoading ? s.current?.globalId : null),
+    );
+
+    final favIds = favorites.map((s) => s.globalId).toSet();
 
     return Container(
       color: AppColors.bg,
@@ -279,18 +286,14 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                         }
 
                         final s = results[i];
-                        final isFav = favorites.any(
-                          (f) => f.globalId == s.globalId,
-                        );
-                        final displaySong = s.copyWith(isFavorite: isFav);
-                        final active = player.current?.globalId == s.globalId;
-                        final isLoadingThis = player.isLoading && active;
+                        final displaySong = s.copyWith(isFavorite: favIds.contains(s.globalId));
+                        final active = currentId == s.globalId;
+                        final isLoadingThis = loadingId == s.globalId;
 
                         return SongTile(
                           song: displaySong,
                           active: active,
                           loading: isLoadingThis,
-                          // ★ 用 playOrOpen，追加模式
                           onTap: () => playOrOpen(
                             context,
                             ref,

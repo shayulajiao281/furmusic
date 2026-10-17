@@ -35,12 +35,21 @@ class _LocalMusicPageState extends ConsumerState<LocalMusicPage> {
   Widget build(BuildContext context) {
     final songs = ref.watch(localSongsProvider);
     final favorites = ref.watch(favoriteSongsProvider);
-    final player = ref.watch(playerStateProvider);
     final appNotifier = ref.read(appStateProvider.notifier);
 
+    // ★ 精准订阅，拦截高频重建
+    final currentId = ref.watch(
+      playerStateProvider.select((s) => s.current?.globalId),
+    );
+    final loadingId = ref.watch(
+      playerStateProvider.select((s) => s.isLoading ? s.current?.globalId : null),
+    );
     final hasSong = ref.watch(
       playerStateProvider.select((s) => s.current != null),
     );
+
+    // ★ 收藏 Set，O(1) 查找
+    final favIds = favorites.map((s) => s.globalId).toSet();
 
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
@@ -67,25 +76,22 @@ class _LocalMusicPageState extends ConsumerState<LocalMusicPage> {
                 top: true,
                 bottom: false,
                 child: Padding(
+                  // 给底部悬浮条留空间
                   padding: EdgeInsets.only(bottom: hasSong ? 56 : 0),
                   child: songs.isEmpty
                       ? _empty()
                       : ListView.builder(
-                          padding:
-                              const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
                           itemCount: songs.length,
                           itemBuilder: (_, i) {
                             final s = songs[i];
-                            final isFav = favorites.any(
-                              (f) => f.globalId == s.globalId,
-                            );
                             final displaySong =
-                                s.copyWith(isFavorite: isFav);
+                                s.copyWith(isFavorite: favIds.contains(s.globalId));
 
                             return SongTile(
                               song: displaySong,
-                              active: player.current?.globalId == s.globalId,
-                              // ★ 用 playOrOpen
+                              active: currentId == s.globalId,
+                              loading: loadingId == s.globalId,
                               onTap: () => playOrOpen(
                                 context,
                                 ref,
@@ -100,12 +106,17 @@ class _LocalMusicPageState extends ConsumerState<LocalMusicPage> {
                 ),
               ),
             ),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: const MiniPlayer(),
-            ),
+            // ★ 悬浮条独立图层
+            if (hasSong)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: RepaintBoundary(
+                  // ★ 开启安全区
+                  child: const MiniPlayer(useSafeArea: true),
+                ),
+              ),
           ],
         ),
       ),

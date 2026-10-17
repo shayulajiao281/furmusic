@@ -18,17 +18,11 @@ Future<void> main() async {
     androidNotificationOngoing: true,
   );
 
-  // await AudioCache.clear();
-
   await AudioCache.size();
   AudioCache.trim().catchError((_) {});
 
   final prefs = await SharedPreferences.getInstance();
-
-  // 把 prefs 挂给 AuthStore
   AuthStore.attach(prefs);
-
-  // ★ 初始化设备指纹（持久化 guid / qimei）
   await DeviceFingerprint.init();
 
   runApp(

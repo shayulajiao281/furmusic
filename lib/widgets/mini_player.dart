@@ -10,14 +10,20 @@ import '../theme/app_colors.dart';
 import 'playlist_sheet.dart';
 import 'song_cover.dart';
 
+// ★ 全局颜色缓存
+final Map<String, Color> _colorCache = {};
+
 class MiniPlayer extends ConsumerStatefulWidget {
-  const MiniPlayer({super.key});
+  /// 是否开启底部安全区（子页面开启，主 Tab 页关闭）
+  final bool useSafeArea;
+  const MiniPlayer({super.key, this.useSafeArea = false});
+
   @override
   ConsumerState<MiniPlayer> createState() => _MiniPlayerState();
 }
 
 class _MiniPlayerState extends ConsumerState<MiniPlayer> {
-  static const _duration = Duration(milliseconds: 400);
+  static const _duration = Duration(milliseconds: 320);
   static const _curve = Curves.easeOutCubic;
   static const double _rowHeight = 56;
 
@@ -28,6 +34,13 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
   Future<void> _extractColor(String coverUrl, String songId) async {
     if (coverUrl.isEmpty) return;
     if (_extractedFor == songId) return;
+    
+    // ★ 查缓存
+    if (_colorCache.containsKey(songId)) {
+      if (mounted) setState(() => _dominantColor = _colorCache[songId]!);
+      return;
+    }
+
     _extractedFor = songId;
     try {
       final palette = await PaletteGenerator.fromImageProvider(
@@ -38,8 +51,9 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
           palette.dominantColor?.color ??
           palette.vibrantColor?.color ??
           palette.mutedColor?.color;
-      if (color != null && mounted) {
-        setState(() => _dominantColor = color);
+      if (color != null) {
+        _colorCache[songId] = color;
+        if (mounted) setState(() => _dominantColor = color);
       }
     } catch (_) {
       if (mounted) setState(() => _dominantColor = AppColors.primary);
@@ -65,19 +79,8 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
     final player = ref.watch(playerStateProvider);
     final song = player.current;
 
-    return ClipRect(
-      child: AnimatedSize(
-        duration: _duration,
-        curve: _curve,
-        alignment: Alignment.bottomCenter,
-        child: song == null
-            ? const SizedBox(width: double.infinity, height: 0)
-            : _buildMini(player, song),
-      ),
-    );
-  }
+    if (song == null) return const SizedBox.shrink();
 
-  Widget _buildMini(PlayerState player, Song song) {
     final expanded = player.expanded;
     final favorites = ref.watch(favoriteSongsProvider);
     final isFav = favorites.any((s) => s.globalId == song.globalId);
@@ -85,6 +88,7 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
     final loading = player.isLoading;
 
     if (_extractedFor != song.id) {
+      // ★ 延迟到首帧渲染后提取，绝不阻塞路由动画
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _extractColor(song.coverPath, song.id);
       });
@@ -92,6 +96,7 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
 
     final baseColor = _shift(_dominantColor, expanded ? 0.18 : -0.06, 0.92);
     final endColor = _shift(_dominantColor, expanded ? 0.30 : -0.22, 0.88);
+
     final radius = expanded
         ? BorderRadius.circular(22)
         : const BorderRadius.vertical(top: Radius.circular(14));
@@ -119,135 +124,135 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
       ),
       child: ClipRRect(
         borderRadius: radius,
-        // ★ 关键：外层手势包住整个卡片，点卡片本体进详情页
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: loading ? null : () => context.push('/player'),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // ═══ 第一行 ═══
-              SizedBox(
-                height: _rowHeight,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Row(
-                    children: [
-                      SongCover(path: song.coverPath, size: 40, radius: 10),
-                      const SizedBox(width: 10),
-                      // 歌名区域：不再单独放 GestureDetector，
-                      // 由外层统一处理点击进详情页
-                      Expanded(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              song.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 13.5,
-                                fontWeight: FontWeight.w600,
-                                color: expanded
-                                    ? _shift(_dominantColor, -0.45, 0.7)
-                                    : CupertinoColors.white,
-                                height: 1.2,
+          // ★ 安全区 Padding
+          child: Padding(
+            padding: EdgeInsets.only(
+              bottom: widget.useSafeArea
+                  ? MediaQuery.of(context).padding.bottom
+                  : 0,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  height: _rowHeight,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Row(
+                      children: [
+                        SongCover(path: song.coverPath, size: 40, radius: 10),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                song.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: expanded
+                                      ? _shift(_dominantColor, -0.45, 0.7)
+                                      : CupertinoColors.white,
+                                  height: 1.2,
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              loading ? '正在加载…' : song.artist,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: expanded
-                                    ? _shift(
-                                        _dominantColor,
-                                        -0.45,
-                                        0.7,
-                                      ).withValues(alpha: 0.6)
-                                    : CupertinoColors.white.withValues(
-                                        alpha: 0.85,
-                                      ),
-                                height: 1.2,
+                              const SizedBox(height: 2),
+                              Text(
+                                loading ? '正在加载…' : song.artist,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: expanded
+                                      ? _shift(_dominantColor, -0.45, 0.7)
+                                          .withValues(alpha: 0.6)
+                                      : CupertinoColors.white
+                                          .withValues(alpha: 0.85),
+                                  height: 1.2,
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                      // 右侧按钮：固定宽度
-                      SizedBox(
-                        width: 96,
-                        child: AnimatedSwitcher(
-                          duration: _duration,
-                          switchInCurve: _curve,
-                          switchOutCurve: _curve,
-                          transitionBuilder: (child, animation) =>
-                              FadeTransition(opacity: animation, child: child),
-                          child: expanded
-                              ? Row(
-                                  key: const ValueKey('collapse'),
-                                  mainAxisAlignment: MainAxisAlignment.end,
-                                  children: [
-                                    GestureDetector(
-                                      behavior: HitTestBehavior.opaque,
-                                      onTap: notifier.collapse,
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(6),
-                                        child: Icon(
-                                          CupertinoIcons.chevron_down,
-                                          size: 22,
-                                          color: _shift(
-                                            _dominantColor,
-                                            -0.45,
-                                            0.7,
-                                          ).withValues(alpha: 0.85),
+                        SizedBox(
+                          width: 96,
+                          child: AnimatedSwitcher(
+                            duration: _duration,
+                            switchInCurve: _curve,
+                            switchOutCurve: _curve,
+                            transitionBuilder: (child, animation) =>
+                                FadeTransition(
+                                    opacity: animation, child: child),
+                            child: expanded
+                                ? Row(
+                                    key: const ValueKey('collapse'),
+                                    mainAxisAlignment: MainAxisAlignment.end,
+                                    children: [
+                                      GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onTap: notifier.collapse,
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(6),
+                                          child: Icon(
+                                            CupertinoIcons.chevron_down,
+                                            size: 22,
+                                            color: _shift(
+                                                    _dominantColor, -0.45, 0.7)
+                                                .withValues(alpha: 0.85),
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ],
-                                )
-                              : Row(
-                                  key: const ValueKey('actions'),
-                                  mainAxisAlignment: MainAxisAlignment.end,
-                                  children: [
-                                    _smallPlayButton(loading, player, notifier),
-                                    _smallIconBtn(
-                                      icon: CupertinoIcons.list_bullet,
-                                      enabled: !loading,
-                                      onTap: () => showPlaylistSheet(context),
-                                    ),
-                                  ],
-                                ),
+                                    ],
+                                  )
+                                : Row(
+                                    key: const ValueKey('actions'),
+                                    mainAxisAlignment: MainAxisAlignment.end,
+                                    children: [
+                                      _smallPlayButton(
+                                          loading, player, notifier),
+                                      _smallIconBtn(
+                                        icon: CupertinoIcons.list_bullet,
+                                        enabled: !loading,
+                                        onTap: () =>
+                                            showPlaylistSheet(context),
+                                      ),
+                                    ],
+                                  ),
+                          ),
                         ),
+                      ],
+                    ),
+                  ),
+                ),
+                ClipRect(
+                  child: AnimatedAlign(
+                    duration: _duration,
+                    curve: _curve,
+                    alignment: Alignment.topCenter,
+                    heightFactor: expanded ? 1.0 : 0.0,
+                    child: AnimatedOpacity(
+                      duration: _duration,
+                      curve: _curve,
+                      opacity: expanded ? 1.0 : 0.0,
+                      child: _buildExpandedPanel(
+                        song: song,
+                        player: player,
+                        notifier: notifier,
+                        isFav: isFav,
+                        loading: loading,
                       ),
-                    ],
+                    ),
                   ),
                 ),
-              ),
-
-              // ═══ 展开面板 ═══
-              AnimatedAlign(
-                duration: _duration,
-                curve: _curve,
-                alignment: Alignment.topCenter,
-                heightFactor: expanded ? 1.0 : 0.0,
-                child: AnimatedOpacity(
-                  duration: _duration,
-                  curve: _curve,
-                  opacity: expanded ? 1.0 : 0.0,
-                  child: _buildExpandedPanel(
-                    song: song,
-                    player: player,
-                    notifier: notifier,
-                    isFav: isFav,
-                    loading: loading,
-                  ),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -267,8 +272,8 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
     final displayProgress = _dragProgress ?? player.progress.clamp(0.0, 1.0);
     final displayPos = _dragProgress != null
         ? Duration(
-            milliseconds: (player.duration.inMilliseconds * _dragProgress!)
-                .round(),
+            milliseconds:
+                (player.duration.inMilliseconds * _dragProgress!).round(),
           )
         : player.position;
 
@@ -528,7 +533,6 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
   }
 }
 
-/// QQ 音乐式"律动"加载
 class _LoadingBars extends StatefulWidget {
   final double size;
   final Color color;
