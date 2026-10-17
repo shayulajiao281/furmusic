@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -91,7 +90,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
   bool _switching = false;
   DateTime? _switchLockTime;
 
-  // ★ 缓存 URL 和已触发下载的标记
   final Map<String, String> _resolvedUrls = {};
   final Set<String> _cacheTriggeredSongs = {};
 
@@ -143,7 +141,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
       }
       state = state.copyWith(position: pos, lyricIndex: idx);
 
-      // ★ 只要播放进度大于 0，说明已经开始出声，立刻触发后台缓存
+      // ★ 只要播放进度大于 0，立刻触发后台缓存
       if (pos > Duration.zero) {
         final song = state.current;
         if (song != null) {
@@ -353,7 +351,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     if (url.isEmpty || !url.startsWith('http')) {
       final source = ref.read(sourceByIdProvider)(song.source);
       url = await source.getSongUrl(song.id).timeout(
-        const Duration(seconds: 15),
+        const Duration(seconds: 8), // ★ 严格 8 秒超时，不重试
         onTimeout: () => null,
       );
     }
@@ -365,8 +363,30 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return song.copyWith(audioPath: url);
   }
 
-  AudioSource _buildAudioSource(Song s) {
-    return _LazyAudioSource(s, this, ref);
+  // ★ 使用最原生的 AudioSource.uri，彻底放弃自定义流，进度条绝对走！
+  AudioSource _singleSource(Song s) {
+    final path = s.audioPath;
+    final isLocal = !path.startsWith('http');
+    final source = ref.read(sourceByIdProvider)(s.source);
+    final headers = isLocal ? null : source.audioHeaders;
+
+    return AudioSource.uri(
+      isLocal ? Uri.file(path) : Uri.parse(path),
+      tag: MediaItem(
+        id: s.globalId,
+        title: s.title,
+        artist: s.artist,
+        album: s.album,
+        duration: s.duration,
+        artUri: s.coverPath.isNotEmpty ? Uri.tryParse(s.coverPath) : null,
+        extras: {
+          'audioPath': s.audioPath,
+          'source': s.source,
+          'duration': s.duration.inMilliseconds,
+        },
+      ),
+      headers: headers,
+    );
   }
 
   Future<bool> playSong(
@@ -406,13 +426,33 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
       await _forceStop();
 
-      final initialIndex = list.indexWhere((s) => s.globalId == song.globalId);
-      final sources = list.map((s) => _buildAudioSource(s)).toList();
+      // ★ 并发解析整个队列，只要有一个失败就跳过，全量喂给原生播放器
+      print('🔍 [player] 并发解析队列 ${list.length} 首...');
+      final resolvedList = await Future.wait(list.map((s) async {
+        return await _resolveOne(s);
+      }));
 
-      final concat = ConcatenatingAudioSource(
-        children: sources,
-        useLazyPreparation: true, 
-      );
+      final validSongs = <Song>[];
+      int initialIndex = -1;
+      for (var i = 0; i < list.length; i++) {
+        final r = resolvedList[i];
+        if (r != null && r.audioPath.isNotEmpty) {
+          if (list[i].globalId == song.globalId) initialIndex = validSongs.length;
+          validSongs.add(r);
+        }
+      }
+
+      if (initialIndex < 0) {
+        print('❌ [player] 当前歌曲解析失败');
+        await _resetPlayer();
+        state = state.copyWith(isLoading: false, isPlaying: false);
+        if (!fromAutoPlay) _reportError(_failReason(song));
+        return false;
+      }
+
+      _queue = validSongs;
+      final sources = validSongs.map((s) => _singleSource(s)).toList();
+      final concat = ConcatenatingAudioSource(children: sources);
       _concatSource = concat;
 
       try {
@@ -438,7 +478,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
       state = state.copyWith(
         isLoading: false,
         isPlaying: true,
-        queue: List.unmodifiable(list),
+        queue: List.unmodifiable(validSongs),
       );
       HapticFeedback.lightImpact();
       _persist();
@@ -468,22 +508,39 @@ class PlayerNotifier extends Notifier<PlayerState> {
       state = state.copyWith(isLoading: true);
 
       final list = state.queue.isNotEmpty ? state.queue : [song];
-      _queue = list;
+      
+      // 并发解析
+      final resolvedList = await Future.wait(list.map((s) async {
+        return await _resolveOne(s);
+      }));
 
-      final initialIndex = list.indexWhere((s) => s.globalId == song.globalId);
-      final sources = list.map((s) => _buildAudioSource(s)).toList();
+      final validSongs = <Song>[];
+      int initialIndex = -1;
+      for (var i = 0; i < list.length; i++) {
+        final r = resolvedList[i];
+        if (r != null && r.audioPath.isNotEmpty) {
+          if (list[i].globalId == song.globalId) initialIndex = validSongs.length;
+          validSongs.add(r);
+        }
+      }
 
-      final concat = ConcatenatingAudioSource(
-        children: sources,
-        useLazyPreparation: true,
-      );
+      if (initialIndex < 0) {
+        await _resetPlayer();
+        state = state.copyWith(isLoading: false, isPlaying: false);
+        _reportError(_failReason(song));
+        return;
+      }
+
+      _queue = validSongs;
+      final sources = validSongs.map((s) => _singleSource(s)).toList();
+      final concat = ConcatenatingAudioSource(children: sources);
       _concatSource = concat;
 
       try {
         await _player
             .setAudioSource(
               concat,
-              initialIndex: initialIndex < 0 ? 0 : initialIndex,
+              initialIndex: initialIndex,
               initialPosition: resumeAt,
             )
             .timeout(const Duration(seconds: 30));
@@ -501,7 +558,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
       state = state.copyWith(
         isLoading: false,
         isPlaying: true,
-        queue: List.unmodifiable(list),
+        queue: List.unmodifiable(validSongs),
       );
       _loadLyricAsync(song);
     } catch (e) {
@@ -671,149 +728,3 @@ class PlayerNotifier extends Notifier<PlayerState> {
 final playerStateProvider = NotifierProvider<PlayerNotifier, PlayerState>(
   PlayerNotifier.new,
 );
-
-class _LazyAudioSource extends StreamAudioSource {
-  final Song song;
-  final PlayerNotifier notifier;
-  final Ref ref;
-
-  _LazyAudioSource(this.song, this.notifier, this.ref)
-      : super(
-          tag: MediaItem(
-            id: song.globalId,
-            title: song.title,
-            artist: song.artist,
-            album: song.album,
-            duration: song.duration,
-            artUri: song.coverPath.isNotEmpty ? Uri.tryParse(song.coverPath) : null,
-            extras: {
-              'source': song.source,
-              'duration': song.duration.inMilliseconds,
-            },
-          ),
-        );
-
-  @override
-  Future<StreamAudioResponse> request([int? start, int? end]) async {
-    final cachedPath = await AudioCache.get(song.globalId);
-    if (cachedPath != null) {
-      print('⚡ [LazyAudioSource] 命中本地缓存: ${song.title}');
-      return _fileStream(cachedPath, start, end);
-    }
-
-    final resolved = await notifier._resolveOne(song);
-    if (resolved == null || resolved.audioPath.isEmpty) {
-      throw Exception('无法解析音频链接');
-    }
-
-    final path = resolved.audioPath;
-    final source = ref.read(sourceByIdProvider)(song.source);
-
-    print('🌐 [LazyAudioSource] 走网络流播放: ${song.title}');
-    return _networkStream(path, source.audioHeaders, start, end);
-  }
-
-  StreamAudioResponse _fileStream(String path, int? start, int? end) {
-    final file = File(path);
-    final length = file.lengthSync();
-    return StreamAudioResponse(
-      sourceLength: length,
-      contentLength: (end ?? length) - (start ?? 0),
-      offset: start ?? 0,
-      stream: file.openRead(start ?? 0, end),
-      contentType: 'audio/mpeg',
-    );
-  }
-
-  // ★ iOS 终极修复：首次请求 HEAD 探测长度，避免 AVPlayer 卡死
-  Future<StreamAudioResponse> _networkStream(
-      String url, Map<String, String> headers, int? start, int? end) async {
-    final client = http.Client();
-    
-    // 1. 首次请求（无 start 或 start 为 0），用 HEAD 拿准确的 Content-Length
-    int? totalLength;
-    if (start == null || start == 0) {
-      try {
-        final headReq = http.Request('HEAD', Uri.parse(url));
-        headReq.headers.addAll(headers);
-        final headResp = await client.send(headReq).timeout(const Duration(seconds: 5));
-        totalLength = headResp.contentLength;
-        if (totalLength == null) {
-          final cr = headResp.headers['content-range'];
-          if (cr != null && cr.contains('/')) {
-            totalLength = int.tryParse(cr.split('/').last);
-          }
-        }
-      } catch (e) {
-        print('⚠️ [LazyAudioSource] HEAD 探测失败: $e');
-      }
-    }
-    
-    // 2. 发 GET（只有拖动进度条才带 Range）
-    final request = http.Request('GET', Uri.parse(url));
-    request.headers.addAll(headers);
-    if (start != null && start > 0) {
-      final s = start;
-      final e = end != null ? '-$end' : '-';
-      request.headers['Range'] = 'bytes=$s$e';
-    }
-    
-    final response = await client.send(request);
-    
-    // 3. 解析总长度
-    int? sourceLength = totalLength;
-    if (sourceLength == null) {
-      final contentRange = response.headers['content-range'];
-      if (contentRange != null && contentRange.contains('/')) {
-        sourceLength = int.tryParse(contentRange.split('/').last);
-      }
-    }
-    sourceLength ??= response.contentLength;
-    
-    // 4. 计算本次请求的分段长度
-    int? contentLen = response.contentLength;
-    if (contentLen == null && sourceLength != null) {
-      contentLen = sourceLength - (start ?? 0);
-    }
-    
-    // 5. 强制兜底 Content-Type，防止 B站 返回 application/octet-stream
-    String contentType = response.headers['content-type'] ?? 'audio/mp4';
-    if (!contentType.contains('audio') && !contentType.contains('video')) {
-      contentType = 'audio/mp4';
-    }
-    
-    // 6. 计算 offset（只有 206 才使用 start，200 全量要手动跳过）
-    int offset = response.statusCode == 206 ? (start ?? 0) : 0;
-    Stream<List<int>> stream = response.stream;
-    
-    // 7. 处理服务器不支持 Range 返回 200 的情况
-    if (response.statusCode == 200 && start != null && start > 0) {
-      int skipBytes = start;
-      stream = stream.transform<List<int>>(
-        StreamTransformer<List<int>, List<int>>.fromHandlers(
-          handleData: (List<int> data, EventSink<List<int>> sink) {
-            if (skipBytes > 0) {
-              if (data.length <= skipBytes) {
-                skipBytes -= data.length;
-              } else {
-                sink.add(data.sublist(skipBytes));
-                skipBytes = 0;
-              }
-            } else {
-              sink.add(data);
-            }
-          },
-        ),
-      );
-      offset = 0;
-    }
-    
-    return StreamAudioResponse(
-      sourceLength: sourceLength,
-      contentLength: contentLen,
-      offset: offset,
-      stream: stream,
-      contentType: contentType,
-    );
-  }
-}
