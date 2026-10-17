@@ -82,7 +82,6 @@ class PlayerState {
 }
 
 class PlayerNotifier extends Notifier<PlayerState> {
-  // ★ 唯一单例，绝不销毁重建，防止 iOS 原生层卡死
   final AudioPlayer _player = AudioPlayer();
   
   Duration _lastKnownDuration = Duration.zero;
@@ -157,13 +156,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
       }
     });
 
-    // ★ 核心自愈：当发生不可挽回的播放错误时，强制重试或跳过
     _player.playbackEventStream.listen((event) {}, onError: (Object e, StackTrace st) {
       print('❌ [player] 播放发生错误: $e');
       if (state.isLoading) {
         _reportError('当前歌曲无法播放，已自动跳过');
       }
-      // 如果出错的是当前正在播放的歌，自动切下一首，防止死锁
       if (state.isPlaying) {
         _onPlaybackError();
       }
@@ -173,14 +170,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
   }
 
   void _onPlaybackError() {
-    // 如果错误频发，说明当前链接全挂了，可以直接抛给用户，或者静默跳下一首
     Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) {
-        final idx = _queue.indexWhere((s) => s.globalId == state.current?.globalId);
-        if (idx >= 0 && _queue.length > 1) {
-          print('🔄 [player] 播放崩溃，自动切下一首');
-          next();
-        }
+      final idx = _queue.indexWhere((s) => s.globalId == state.current?.globalId);
+      if (idx >= 0 && _queue.length > 1) {
+        print('🔄 [player] 播放崩溃，自动切下一首');
+        next();
       }
     });
   }
@@ -331,13 +325,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
     }
   }
 
-  // ★ 将播放器重置为极度干净的初始状态，防止 iOS 第二次播放死锁
   Future<void> _cleanPlayerState() async {
     try {
       await _player.stop().timeout(const Duration(seconds: 2));
-    } catch (_) {}
-    try {
-      await _player.setAudioSource(null).timeout(const Duration(seconds: 2));
     } catch (_) {}
     _hasSource = false;
   }
@@ -347,14 +337,13 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return '《${song.title}》暂时无法播放';
   }
 
-  // ★ 验证 URL 是否真正可播放，把 403 的 B 站坏链接彻底拉黑
   Future<bool> _checkUrlValid(String url, Map<String, String> headers) async {
     if (url.isEmpty) return false;
     if (url.startsWith('/') || url.startsWith('file:')) return true;
     try {
       final req = http.Request('GET', Uri.parse(url));
       req.headers.addAll(headers);
-      req.headers['Range'] = 'bytes=0-0'; // 仅请求第一个字节
+      req.headers['Range'] = 'bytes=0-0'; 
       final res = await http.Client().send(req).timeout(const Duration(seconds: 4));
       return res.statusCode == 200 || res.statusCode == 206;
     } catch (_) {
@@ -394,7 +383,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     if (url == null || url.isEmpty) return null;
 
-    // ★ 校验链接有效性，防止过期链接传给 AVPlayer 直接锁死
     final source = ref.read(sourceByIdProvider)(song.source);
     final isValid = await _checkUrlValid(url, source.audioHeaders);
     if (!isValid) {
@@ -466,10 +454,8 @@ class PlayerNotifier extends Notifier<PlayerState> {
       );
       _queue = list;
 
-      // 1. 彻底清空旧状态，避免多线程死锁
       await _cleanPlayerState();
 
-      // 2. 并发解析 (包含安全校验)
       print('🔍 [player] 并发解析队列 ${list.length} 首...');
       final resolvedList = await Future.wait(list.map((s) async {
         try {
