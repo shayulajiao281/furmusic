@@ -297,6 +297,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                       song: s.copyWith(isFavorite: favIds.contains(s.globalId)),
                       active: currentId == s.globalId,
                       loading: loadingId == s.globalId,
+                      // ★ 整体替换当前队列
                       onTap: () => playOrOpen(
                         context,
                         ref,
@@ -430,6 +431,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                     displaySong,
                     active,
                     isLoadingThis,
+                    // ★ 整体替换当前队列
                     onTap: () => playOrOpen(
                       context,
                       ref,

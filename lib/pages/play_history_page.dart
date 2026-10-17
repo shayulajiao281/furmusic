@@ -109,7 +109,6 @@ class PlayHistoryPage extends ConsumerWidget {
                 right: 0,
                 bottom: 0,
                 child: RepaintBoundary(
-                  // ★ 开启安全区
                   child: const MiniPlayer(useSafeArea: true),
                 ),
               ),
@@ -159,6 +158,7 @@ class _HistoryTile extends ConsumerWidget {
         loading: loading,
         onTap: () {
           final queue = ref.read(recentSongsProvider);
+          // ★ 整体替换
           playOrOpen(context, ref, song, queue: queue);
         },
         onFavorite: onFav,

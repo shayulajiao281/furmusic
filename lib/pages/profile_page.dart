@@ -100,7 +100,7 @@ class ProfilePage extends ConsumerWidget {
                       (s) => SongTile(
                         song: s,
                         active: player.current?.globalId == s.globalId,
-                        // ★ 用 playOrOpen
+                        // ★ 整体替换当前队列
                         onTap: () => playOrOpen(
                           context,
                           ref,

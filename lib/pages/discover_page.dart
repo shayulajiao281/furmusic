@@ -91,7 +91,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     final futures = sources.map((s) => _fetchPage(s, 1)).toList();
 
     try {
-      // 等待全部并发结束，设置 10 秒全局兜底防卡死
       await Future.wait(futures).timeout(const Duration(seconds: 10));
     } catch (e) {
       print('⚠️ [discover] 搜索整体超时或部分出错: $e');
@@ -210,7 +209,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
               ),
             ),
 
-            // 搜索框
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Container(
@@ -266,7 +264,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
               ),
             ),
 
-            // 源筛选 chips
             if (_searched)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
@@ -287,7 +284,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
 
             const SizedBox(height: 8),
 
-            // 结果列表
             Expanded(
               child: _loading
                   ? const Center(child: CupertinoActivityIndicator())
@@ -315,7 +311,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                             context,
                             ref,
                             s,
-                            appendToQueue: true,
+                            appendToQueue: true, // ★ 发现页插队
                           ),
                           onFavorite: () => _toggleFav(displaySong),
                         );
