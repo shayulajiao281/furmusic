@@ -6,15 +6,15 @@ import 'package:palette_generator/palette_generator.dart';
 import '../models/song.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
+import '../providers/audio_cache_state.dart';
+import '../services/image_cache.dart';
 import '../theme/app_colors.dart';
 import 'playlist_sheet.dart';
 import 'song_cover.dart';
 
-// ★ 全局颜色缓存
 final Map<String, Color> _colorCache = {};
 
 class MiniPlayer extends ConsumerStatefulWidget {
-  /// 是否开启底部安全区（子页面开启，主 Tab 页关闭）
   final bool useSafeArea;
   const MiniPlayer({super.key, this.useSafeArea = false});
 
@@ -34,8 +34,7 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
   Future<void> _extractColor(String coverUrl, String songId) async {
     if (coverUrl.isEmpty) return;
     if (_extractedFor == songId) return;
-    
-    // ★ 查缓存
+
     if (_colorCache.containsKey(songId)) {
       if (mounted) setState(() => _dominantColor = _colorCache[songId]!);
       return;
@@ -43,12 +42,15 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
 
     _extractedFor = songId;
     try {
+      final file = ImageCacheManager.getCached(coverUrl) ??
+          await ImageCacheManager.get(coverUrl);
+      if (file == null) return;
+
       final palette = await PaletteGenerator.fromImageProvider(
-        NetworkImage(coverUrl),
+        FileImage(file),
         maximumColorCount: 8,
       );
-      final color =
-          palette.dominantColor?.color ??
+      final color = palette.dominantColor?.color ??
           palette.vibrantColor?.color ??
           palette.mutedColor?.color;
       if (color != null) {
@@ -87,8 +89,13 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
     final notifier = ref.read(playerStateProvider.notifier);
     final loading = player.isLoading;
 
+    // ★ 缓存进度
+    final cacheProgress = expanded
+        ? (ref.watch(audioCacheProgressProvider(song.globalId)).asData?.value ??
+            0.0)
+        : 0.0;
+
     if (_extractedFor != song.id) {
-      // ★ 延迟到首帧渲染后提取，绝不阻塞路由动画
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _extractColor(song.coverPath, song.id);
       });
@@ -127,7 +134,6 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: loading ? null : () => context.push('/player'),
-          // ★ 安全区 Padding
           child: Padding(
             padding: EdgeInsets.only(
               bottom: widget.useSafeArea
@@ -247,6 +253,7 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
                         notifier: notifier,
                         isFav: isFav,
                         loading: loading,
+                        cacheProgress: cacheProgress,
                       ),
                     ),
                   ),
@@ -265,6 +272,7 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
     required PlayerNotifier notifier,
     required bool isFav,
     required bool loading,
+    required double cacheProgress,
   }) {
     final textColor = _shift(_dominantColor, -0.45, 0.7);
     final subColor = textColor.withValues(alpha: 0.6);
@@ -284,6 +292,7 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
         children: [
           _progressBar(
             value: displayProgress,
+            buffer: cacheProgress,
             color: textColor,
             enabled: !loading && player.duration > Duration.zero,
             onStart: (v) => setState(() => _dragProgress = v),
@@ -358,6 +367,7 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
 
   Widget _progressBar({
     required double value,
+    required double buffer,
     required Color color,
     required bool enabled,
     required ValueChanged<double> onStart,
@@ -367,8 +377,10 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
     return LayoutBuilder(
       builder: (context, c) {
         final width = c.maxWidth;
-        final ratio = value.clamp(0.0, 1.0);
-        final thumbX = width * ratio;
+        final valueRatio = value.clamp(0.0, 1.0);
+        final bufferRatio = buffer.clamp(0.0, 1.0);
+        final renderBuffer = math.max(bufferRatio, valueRatio);
+        final thumbX = width * valueRatio;
 
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
@@ -398,14 +410,28 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
             child: Stack(
               alignment: Alignment.centerLeft,
               children: [
+                // ① 背景：白色20%（深色背景上更清晰）
                 Container(
                   height: 3,
                   width: width,
                   decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.2),
+                    color: CupertinoColors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
+                // ② 缓存层：白色50%
+                if (renderBuffer > 0.001)
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOut,
+                    height: 3,
+                    width: width * renderBuffer,
+                    decoration: BoxDecoration(
+                      color: CupertinoColors.white.withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                // ③ 播放进度
                 Container(
                   height: 3,
                   width: thumbX,
@@ -414,6 +440,7 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
+                // ④ 播放头
                 Positioned(
                   left: (thumbX - 6).clamp(0.0, width - 12),
                   child: Container(

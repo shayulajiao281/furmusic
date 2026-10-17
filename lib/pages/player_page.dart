@@ -1,10 +1,13 @@
 import 'dart:math' as math;
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:palette_generator/palette_generator.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
+import '../providers/audio_cache_state.dart';
+import '../services/image_cache.dart';
 import '../theme/app_colors.dart';
 import '../widgets/song_cover.dart';
 import '../widgets/song_source_badge.dart';
@@ -23,7 +26,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   bool _showLyric = false;
   static const double _lyricAnchor = 0.667;
 
-  /// ★ 从封面提取的多个颜色（用于律动背景）
   List<Color> _paletteColors = const [AppColors.primary];
   String? _extractedFor;
 
@@ -32,13 +34,16 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     if (_extractedFor == songId) return;
     _extractedFor = songId;
     try {
+      final file = ImageCacheManager.getCached(coverUrl) ??
+          await ImageCacheManager.get(coverUrl);
+      if (file == null) return;
+
       final palette = await PaletteGenerator.fromImageProvider(
-        NetworkImage(coverUrl),
+        FileImage(file),
         maximumColorCount: 16,
       );
 
       final colors = <Color>[];
-      // 收集多个颜色，优先鲜艳的
       final vibrant = palette.vibrantColor?.color;
       final dominant = palette.dominantColor?.color;
       final muted = palette.mutedColor?.color;
@@ -46,15 +51,20 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       final darkVibrant = palette.darkVibrantColor?.color;
       final lightMuted = palette.lightMutedColor?.color;
 
-      for (final c in [vibrant, lightVibrant, dominant, muted, lightMuted, darkVibrant]) {
+      for (final c in [
+        vibrant,
+        lightVibrant,
+        dominant,
+        muted,
+        lightMuted,
+        darkVibrant,
+      ]) {
         if (c != null && !colors.any((e) => _colorDist(e, c) < 0.15)) {
           colors.add(c);
         }
       }
 
       if (colors.isEmpty) colors.add(AppColors.primary);
-
-      // 最多取 4 个
       if (colors.length > 4) colors.removeRange(4, colors.length);
 
       if (mounted) {
@@ -63,7 +73,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     } catch (_) {}
   }
 
-  /// 简单色差计算，用于去重
   double _colorDist(Color a, Color b) {
     final dr = a.red - b.red;
     final dg = a.green - b.green;
@@ -127,6 +136,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     final favorites = ref.watch(favoriteSongsProvider);
     final isFav = favorites.any((s) => s.globalId == song.globalId);
 
+    // ★ 缓存进度
+    final cacheProgress =
+        ref.watch(audioCacheProgressProvider(song.globalId)).asData?.value ??
+            0.0;
+
     return CupertinoPageScaffold(
       child: GestureDetector(
         onVerticalDragUpdate: (details) {
@@ -154,7 +168,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             child: SafeArea(
               child: Column(
                 children: [
-                  // ─── 顶部 ───
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                     child: Column(
@@ -208,8 +221,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                       ],
                     ),
                   ),
-
-                  // ─── 封面 / 歌词区 ───
                   Expanded(
                     child: GestureDetector(
                       behavior: HitTestBehavior.opaque,
@@ -227,8 +238,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                             ),
                     ),
                   ),
-
-                  // ─── 标题 + 来源 + 歌手 ───
                   Padding(
                     padding: const EdgeInsets.fromLTRB(32, 8, 32, 4),
                     child: Column(
@@ -270,10 +279,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                       ],
                     ),
                   ),
-
                   const SizedBox(height: 16),
-
-                  // ─── 进度条 ───
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Builder(
@@ -293,6 +299,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                           children: [
                             QQSlider(
                               value: displayProgress,
+                              buffer: cacheProgress,
                               onChangeStart: (v) {
                                 setState(() => _dragProgress = v);
                                 HapticFeedback.selectionClick();
@@ -317,6 +324,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                               },
                             ),
                             const SizedBox(height: 6),
+                            // ★ 进度条下方的时间与缓存状态
                             Padding(
                               padding:
                                   const EdgeInsets.symmetric(horizontal: 2),
@@ -330,6 +338,66 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                                       fontWeight: FontWeight.w500,
                                     ),
                                   ),
+                                  const SizedBox(width: 8),
+                                  
+                                  // ★ 缓存状态提示
+                                  if (cacheProgress > 0.0 && cacheProgress < 0.99)
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SizedBox(
+                                          width: 8,
+                                          height: 8,
+                                          child:
+                                              CircularProgressIndicator(
+                                            strokeWidth: 1.5,
+                                            value: cacheProgress,
+                                            color: AppColors.primary,
+                                            backgroundColor: AppColors.line,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          '缓存中 ${(cacheProgress * 100).toInt()}%',
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            color: AppColors.primary,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  else if (cacheProgress >= 0.99)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 4, vertical: 1),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.green
+                                            .withValues(alpha: 0.1),
+                                        borderRadius:
+                                            BorderRadius.circular(4),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: const [
+                                          Icon(
+                                            CupertinoIcons
+                                                .checkmark_circle_fill,
+                                            size: 10,
+                                            color: AppColors.green,
+                                          ),
+                                          SizedBox(width: 2),
+                                          Text(
+                                            '已缓存',
+                                            style: TextStyle(
+                                              fontSize: 9,
+                                              color: AppColors.green,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+
                                   const Spacer(),
                                   Text(
                                     _fmt(player.duration),
@@ -347,10 +415,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                       },
                     ),
                   ),
-
                   const SizedBox(height: 12),
-
-                  // ─── 控制按钮 ───
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Row(
@@ -448,7 +513,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                       ],
                     ),
                   ),
-
                   const SizedBox(height: 12),
                 ],
               ),
@@ -504,9 +568,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// ★ 律动背景层（多色光晕，明显）
-// ═══════════════════════════════════════════════════════════
 class _PulseBackground extends StatefulWidget {
   final bool playing;
   final List<Color> colors;
@@ -561,15 +622,12 @@ class _PulseBackgroundState extends State<_PulseBackground>
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, __) {
-        final t = _ctrl.value; // 0 → 1 → 0
+        final t = _ctrl.value;
         final colors = widget.colors;
 
         return Stack(
           children: [
-            // 底色
             Container(color: AppColors.bg),
-
-            // ★ 光晕 1（左上，最强）
             Positioned.fill(
               child: DecoratedBox(
                 decoration: BoxDecoration(
@@ -588,8 +646,6 @@ class _PulseBackgroundState extends State<_PulseBackground>
                 ),
               ),
             ),
-
-            // ★ 光晕 2（右下，用另一个颜色）
             Positioned.fill(
               child: DecoratedBox(
                 decoration: BoxDecoration(
@@ -608,8 +664,6 @@ class _PulseBackgroundState extends State<_PulseBackground>
                 ),
               ),
             ),
-
-            // ★ 光晕 3（右上，第三个颜色）
             Positioned.fill(
               child: DecoratedBox(
                 decoration: BoxDecoration(
@@ -628,8 +682,6 @@ class _PulseBackgroundState extends State<_PulseBackground>
                 ),
               ),
             ),
-
-            // ★ 光晕 4（左下，第四个颜色）
             Positioned.fill(
               child: DecoratedBox(
                 decoration: BoxDecoration(
@@ -648,8 +700,6 @@ class _PulseBackgroundState extends State<_PulseBackground>
                 ),
               ),
             ),
-
-            // 内容
             widget.child,
           ],
         );
@@ -664,10 +714,11 @@ class _PulseBackgroundState extends State<_PulseBackground>
 }
 
 // ═══════════════════════════════════════════════════════════
-// QQ 音乐风格进度条
+// QQ 音乐风格进度条（带缓存层，对比度加强）
 // ═══════════════════════════════════════════════════════════
 class QQSlider extends StatefulWidget {
   final double value;
+  final double buffer;
   final ValueChanged<double>? onChangeStart;
   final ValueChanged<double>? onChanged;
   final ValueChanged<double>? onChangeEnd;
@@ -675,6 +726,7 @@ class QQSlider extends StatefulWidget {
   const QQSlider({
     super.key,
     required this.value,
+    this.buffer = 0.0,
     this.onChangeStart,
     this.onChanged,
     this.onChangeEnd,
@@ -692,12 +744,14 @@ class _QQSliderState extends State<QQSlider> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
-
         final trackHeight = _dragging ? 5.0 : 3.0;
         final thumbSize = _dragging ? 16.0 : 12.0;
 
-        final ratio = widget.value.clamp(0.0, 1.0);
-        final thumbX = width * ratio;
+        final valueRatio = widget.value.clamp(0.0, 1.0);
+        final bufferRatio = widget.buffer.clamp(0.0, 1.0);
+
+        final renderBuffer = math.max(bufferRatio, valueRatio);
+        final thumbX = width * valueRatio;
 
         void handleDx(double dx) {
           final v = (dx / width).clamp(0.0, 1.0);
@@ -733,14 +787,30 @@ class _QQSliderState extends State<QQSlider> {
             child: Stack(
               alignment: Alignment.centerLeft,
               children: [
+                // ① 背景（完全未缓存）- 略微加深，提高对比度
                 Container(
                   height: trackHeight,
                   width: width,
                   decoration: BoxDecoration(
-                    color: AppColors.line,
+                    color: const Color(0xFFE0E4EF),
                     borderRadius: BorderRadius.circular(trackHeight / 2),
                   ),
                 ),
+
+                // ② 缓存层（透明度拉高到 0.4，明显可见）
+                if (renderBuffer > 0.001)
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOut,
+                    height: trackHeight,
+                    width: width * renderBuffer,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.40),
+                      borderRadius: BorderRadius.circular(trackHeight / 2),
+                    ),
+                  ),
+
+                // ③ 播放进度层（主色）
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 100),
                   height: trackHeight,
@@ -750,6 +820,8 @@ class _QQSliderState extends State<QQSlider> {
                     borderRadius: BorderRadius.circular(trackHeight / 2),
                   ),
                 ),
+
+                // ④ 播放头滑块
                 Positioned(
                   left: (thumbX - thumbSize / 2)
                       .clamp(0.0, width - thumbSize),

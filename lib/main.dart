@@ -6,6 +6,7 @@ import 'providers/app_state.dart';
 import 'router/app_router.dart';
 import 'theme/app_colors.dart';
 import 'services/audio_cache.dart';
+import 'services/image_cache.dart';
 import 'services/auth_store.dart';
 import 'services/device_fingerprint.dart';
 
@@ -18,8 +19,12 @@ Future<void> main() async {
     androidNotificationOngoing: true,
   );
 
-  await AudioCache.size();
+  // ★ 建立缓存索引
+  await AudioCache.init();
+  await ImageCacheManager.init();
+
   AudioCache.trim().catchError((_) {});
+  ImageCacheManager.trim().catchError((_) {});
 
   final prefs = await SharedPreferences.getInstance();
   AuthStore.attach(prefs);

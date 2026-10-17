@@ -9,6 +9,7 @@ import '../providers/player_state.dart';
 import '../providers/music_sources.dart';
 import '../theme/app_colors.dart';
 import '../utils/play_or_open.dart';
+import '../widgets/song_cover.dart';
 import '../widgets/song_tile.dart';
 
 class RecommendCategory {
@@ -47,10 +48,9 @@ const _categories = [
 ];
 
 const int _perCategory = 6;
-
 const _kCacheKey = 'furkid_recommend_cache_v1';
 const _kCacheTimeKey = 'furkid_recommend_cache_time';
-const _cacheValidMs = 60 * 60 * 1000; // 1 小时
+const _cacheValidMs = 60 * 60 * 1000;
 
 class MusicPage extends ConsumerStatefulWidget {
   const MusicPage({super.key});
@@ -214,7 +214,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     final favorites = ref.watch(favoriteSongsProvider);
     final hideVip = ref.watch(hideVipProvider);
 
-    // ★ 只订阅关键字段，拦截 position 通知
     final currentId = ref.watch(
       playerStateProvider.select((s) => s.current?.globalId),
     );
@@ -222,9 +221,7 @@ class _MusicPageState extends ConsumerState<MusicPage> {
       playerStateProvider.select((s) => s.isLoading ? s.current?.globalId : null),
     );
 
-    // ★ 收藏用 Set
     final favIds = favorites.map((s) => s.globalId).toSet();
-
     final visibleRecent =
         hideVip ? recent.where((s) => !s.isVip).toList() : recent;
 
@@ -477,7 +474,11 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                   child: SizedBox(
                     width: 132,
                     height: 100,
-                    child: _buildCover(song.coverPath),
+                    child: SongCover(
+                      path: song.coverPath,
+                      size: 132,
+                      radius: 0,
+                    ),
                   ),
                 ),
                 if (isLoadingThis)
@@ -552,35 +553,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCover(String path) {
-    if (path.isEmpty) {
-      return Container(
-        color: AppColors.coverBg,
-        child: const Center(
-          child: Icon(
-            CupertinoIcons.music_note,
-            size: 32,
-            color: AppColors.muted,
-          ),
-        ),
-      );
-    }
-    return Image.network(
-      path,
-      fit: BoxFit.cover,
-      errorBuilder: (_, __, ___) => Container(
-        color: AppColors.coverBg,
-        child: const Center(
-          child: Icon(
-            CupertinoIcons.music_note,
-            size: 32,
-            color: AppColors.muted,
-          ),
         ),
       ),
     );
