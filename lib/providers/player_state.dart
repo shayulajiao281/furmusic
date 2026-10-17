@@ -321,7 +321,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     if (url == null || url.isEmpty) return null;
 
-    // 3. 触发后台下载
+    // 3. ★ 静默触发后台下载，不阻塞播放
     final source = ref.read(sourceByIdProvider)(song.source);
     AudioCache.download(
       song.globalId,
@@ -640,7 +640,7 @@ final playerStateProvider = NotifierProvider<PlayerNotifier, PlayerState>(
 );
 
 // ═══════════════════════════════════════════════════════════
-// ★ iOS 终极防卡顿流音源：优先本地 / 快速等待
+// ★ 流式懒加载音源
 // ═══════════════════════════════════════════════════════════
 class _LazyAudioSource extends StreamAudioSource {
   final Song song;
@@ -665,16 +665,14 @@ class _LazyAudioSource extends StreamAudioSource {
 
   @override
   Future<StreamAudioResponse> request([int? start, int? end]) async {
-    print('🔍 [LazyAudioSource] 开始请求音频: ${song.title}');
-    
-    // 1. 查本地缓存
+    // 1. 查本地缓存，有就秒播
     final cachedPath = await AudioCache.get(song.globalId);
     if (cachedPath != null) {
       print('⚡ [LazyAudioSource] 命中本地缓存: ${song.title}');
       return _fileStream(cachedPath, start, end);
     }
 
-    // 2. 解析 URL
+    // 2. 没缓存，解析 URL（内部会自动触发后台下载，不阻塞这里）
     final resolved = await notifier._resolveOne(song);
     if (resolved == null || resolved.audioPath.isEmpty) {
       throw Exception('无法解析音频链接');
@@ -683,20 +681,8 @@ class _LazyAudioSource extends StreamAudioSource {
     final path = resolved.audioPath;
     final source = ref.read(sourceByIdProvider)(song.source);
 
-    // 3. ★ 核心优化：如果没缓存，我们等最多 2 秒尝试把它下下来
-    final quickCached = await AudioCache.downloadAndWait(
-      song.globalId,
-      path,
-      headers: source.audioHeaders,
-      timeout: const Duration(seconds: 2),
-    );
-    if (quickCached != null) {
-      print('⚡ [LazyAudioSource] 极速缓存完成，切换本地播放: ${song.title}');
-      return _fileStream(quickCached, start, end);
-    }
-
-    // 4. 如果 2 秒没下完，退回网络流播放
-    print('🌐 [LazyAudioSource] 下载超时，走网络流: ${song.title}');
+    // 3. 立刻返回网络流，让播放器边下边播
+    print('🌐 [LazyAudioSource] 走网络流播放: ${song.title}');
     return _networkStream(path, source.audioHeaders, start, end);
   }
 
@@ -725,15 +711,11 @@ class _LazyAudioSource extends StreamAudioSource {
     final response = await client.send(request);
     
     int offset = start ?? 0;
-    
-    // ★ 修复 1：明确指定为 Stream<List<int>>
     Stream<List<int>> stream = response.stream;
     
-    // 处理服务端忽略 Range 返回 200 的情况，手动跳过前面的字节
+    // 处理服务端忽略 Range 返回 200 的情况
     if (offset > 0 && response.statusCode == 200) {
       int skipBytes = offset;
-      
-      // ★ 修复 2：明确指定 StreamTransformer 的泛型
       stream = stream.transform<List<int>>(
         StreamTransformer<List<int>, List<int>>.fromHandlers(
           handleData: (List<int> data, EventSink<List<int>> sink) {

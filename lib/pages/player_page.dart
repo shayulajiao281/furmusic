@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart'; // ★ 增加这一行引入 Material 库
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:palette_generator/palette_generator.dart';
@@ -28,19 +28,29 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   List<Color> _paletteColors = const [AppColors.primary];
   String? _extractedFor;
+  bool _extracting = false;
 
   Future<void> _extractColor(String coverUrl, String songId) async {
     if (coverUrl.isEmpty) return;
     if (_extractedFor == songId) return;
+    if (_extracting) return;
+
+    _extracting = true;
     _extractedFor = songId;
+
     try {
-      final file = ImageCacheManager.getCached(coverUrl) ??
-          await ImageCacheManager.get(coverUrl);
-      if (file == null) return;
+      // 仅从本地缓存提取颜色，没有缓存就跳过（使用默认主色），防止下载卡顿
+      final file = ImageCacheManager.getCached(coverUrl);
+      if (file == null) {
+        _extracting = false;
+        return;
+      }
 
       final palette = await PaletteGenerator.fromImageProvider(
         FileImage(file),
-        maximumColorCount: 16,
+        maximumColorCount: 8,
+        // ★ 极其关键：限制图片解码尺寸为 50x50，避免高清大图导致 UI 卡顿
+        size: const Size(50, 50),
       );
 
       final colors = <Color>[];
@@ -67,10 +77,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       if (colors.isEmpty) colors.add(AppColors.primary);
       if (colors.length > 4) colors.removeRange(4, colors.length);
 
-      if (mounted) {
+      if (mounted && _extractedFor == songId) {
         setState(() => _paletteColors = colors);
       }
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      _extracting = false;
+    }
   }
 
   double _colorDist(Color a, Color b) {
@@ -136,7 +149,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     final favorites = ref.watch(favoriteSongsProvider);
     final isFav = favorites.any((s) => s.globalId == song.globalId);
 
-    // ★ 缓存进度
     final cacheProgress =
         ref.watch(audioCacheProgressProvider(song.globalId)).asData?.value ??
             0.0;
@@ -324,7 +336,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                               },
                             ),
                             const SizedBox(height: 6),
-                            // ★ 进度条下方的时间与缓存状态
                             Padding(
                               padding:
                                   const EdgeInsets.symmetric(horizontal: 2),
@@ -340,7 +351,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                                   ),
                                   const SizedBox(width: 8),
                                   
-                                  // ★ 缓存状态提示
                                   if (cacheProgress > 0.0 && cacheProgress < 0.99)
                                     Row(
                                       mainAxisSize: MainAxisSize.min,
@@ -713,9 +723,6 @@ class _PulseBackgroundState extends State<_PulseBackground>
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// QQ 音乐风格进度条（带缓存层，对比度加强）
-// ═══════════════════════════════════════════════════════════
 class QQSlider extends StatefulWidget {
   final double value;
   final double buffer;
@@ -787,7 +794,6 @@ class _QQSliderState extends State<QQSlider> {
             child: Stack(
               alignment: Alignment.centerLeft,
               children: [
-                // ① 背景（完全未缓存）- 略微加深，提高对比度
                 Container(
                   height: trackHeight,
                   width: width,
@@ -796,8 +802,6 @@ class _QQSliderState extends State<QQSlider> {
                     borderRadius: BorderRadius.circular(trackHeight / 2),
                   ),
                 ),
-
-                // ② 缓存层（透明度拉高到 0.4，明显可见）
                 if (renderBuffer > 0.001)
                   AnimatedContainer(
                     duration: const Duration(milliseconds: 250),
@@ -809,8 +813,6 @@ class _QQSliderState extends State<QQSlider> {
                       borderRadius: BorderRadius.circular(trackHeight / 2),
                     ),
                   ),
-
-                // ③ 播放进度层（主色）
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 100),
                   height: trackHeight,
@@ -820,8 +822,6 @@ class _QQSliderState extends State<QQSlider> {
                     borderRadius: BorderRadius.circular(trackHeight / 2),
                   ),
                 ),
-
-                // ④ 播放头滑块
                 Positioned(
                   left: (thumbX - thumbSize / 2)
                       .clamp(0.0, width - thumbSize),
