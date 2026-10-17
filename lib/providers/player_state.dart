@@ -351,7 +351,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     if (url.isEmpty || !url.startsWith('http')) {
       final source = ref.read(sourceByIdProvider)(song.source);
       url = await source.getSongUrl(song.id).timeout(
-        const Duration(seconds: 8), // ★ 严格 8 秒超时，不重试
+        const Duration(seconds: 6), // ★ 严格 6 秒超时
         onTimeout: () => null,
       );
     }
@@ -363,7 +363,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return song.copyWith(audioPath: url);
   }
 
-  // ★ 使用最原生的 AudioSource.uri，彻底放弃自定义流，进度条绝对走！
+  // ★ 完全使用原生的 AudioSource.uri，进度条绝对走！
   AudioSource _singleSource(Song s) {
     final path = s.audioPath;
     final isLocal = !path.startsWith('http');
@@ -426,7 +426,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
       await _forceStop();
 
-      // ★ 并发解析整个队列，只要有一个失败就跳过，全量喂给原生播放器
+      // ★ 并发解析整个队列，6秒超时直接过滤，绝不卡死
       print('🔍 [player] 并发解析队列 ${list.length} 首...');
       final resolvedList = await Future.wait(list.map((s) async {
         return await _resolveOne(s);
@@ -509,7 +509,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
       final list = state.queue.isNotEmpty ? state.queue : [song];
       
-      // 并发解析
       final resolvedList = await Future.wait(list.map((s) async {
         return await _resolveOne(s);
       }));
