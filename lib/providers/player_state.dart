@@ -297,19 +297,14 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return '《${song.title}》暂时无法播放';
   }
 
-  // ═══════════════════════════════════════════
-  // 懒加载解析器
-  // ═══════════════════════════════════════════
   Future<Song?> _resolveOne(Song song) async {
     if (song.source == 'local') return song;
 
-    // 1. 查本地缓存
     final cached = await AudioCache.get(song.globalId);
     if (cached != null) {
       return song.copyWith(audioPath: cached);
     }
 
-    // 2. 解析网络 URL
     String? url = song.audioPath;
     if (url.isEmpty || !url.startsWith('http')) {
       final source = ref.read(sourceByIdProvider)(song.source);
@@ -321,8 +316,8 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     if (url == null || url.isEmpty) return null;
 
-    // 3. ★ 静默触发后台下载，不阻塞播放
     final source = ref.read(sourceByIdProvider)(song.source);
+    // ★ 触发后台下载（不阻塞返回）
     AudioCache.download(
       song.globalId,
       url,
@@ -639,9 +634,6 @@ final playerStateProvider = NotifierProvider<PlayerNotifier, PlayerState>(
   PlayerNotifier.new,
 );
 
-// ═══════════════════════════════════════════════════════════
-// ★ 流式懒加载音源
-// ═══════════════════════════════════════════════════════════
 class _LazyAudioSource extends StreamAudioSource {
   final Song song;
   final PlayerNotifier notifier;
@@ -698,22 +690,34 @@ class _LazyAudioSource extends StreamAudioSource {
     );
   }
 
+  // ★ 修复后的 B 站网络流请求（带 Range 头，彻底解决卡顿不出声）
   Future<StreamAudioResponse> _networkStream(
       String url, Map<String, String> headers, int? start, int? end) async {
     final client = http.Client();
     final request = http.Request('GET', Uri.parse(url));
     request.headers.addAll(headers);
     
-    if (start != null) {
-      request.headers['Range'] = 'bytes=$start-${end ?? ''}';
-    }
+    // ★ 强制带上 Range 头，即使是 0 也要带，否则某些 CDN 节点返回 200 会导致 just_audio 卡死
+    final s = start ?? 0;
+    final e = end != null ? '-$end' : '-';
+    request.headers['Range'] = 'bytes=$s$e';
 
     final response = await client.send(request);
     
+    int sourceLength = 0;
+    final contentRange = response.headers['content-range']; // bytes 0-1234/5678
+    if (contentRange != null && contentRange.contains('/')) {
+      final totalStr = contentRange.split('/').last;
+      sourceLength = int.tryParse(totalStr) ?? 0;
+    }
+    if (sourceLength == 0) {
+      sourceLength = response.contentLength ?? 0;
+    }
+
     int offset = start ?? 0;
     Stream<List<int>> stream = response.stream;
     
-    // 处理服务端忽略 Range 返回 200 的情况
+    // 如果服务器不认 Range，强行返回了 200 状态码，我们需要跳过已播放的字节
     if (offset > 0 && response.statusCode == 200) {
       int skipBytes = offset;
       stream = stream.transform<List<int>>(
@@ -736,7 +740,7 @@ class _LazyAudioSource extends StreamAudioSource {
     }
 
     return StreamAudioResponse(
-      sourceLength: response.contentLength,
+      sourceLength: sourceLength,
       contentLength: response.contentLength,
       offset: offset,
       stream: stream,

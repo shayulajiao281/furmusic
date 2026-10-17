@@ -19,8 +19,9 @@ class PlayerPage extends ConsumerStatefulWidget {
   ConsumerState<PlayerPage> createState() => _PlayerPageState();
 }
 
-class _PlayerPageState extends ConsumerState<PlayerPage> {
-  double _dragOffset = 0.0;
+class _PlayerPageState extends ConsumerState<PlayerPage>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _dragCtrl;
   double _screenHeight = 0;
   double? _dragProgress;
   bool _showLyric = false;
@@ -29,6 +30,21 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   List<Color> _paletteColors = const [AppColors.primary];
   String? _extractedFor;
   bool _extracting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _dragCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+  }
+
+  @override
+  void dispose() {
+    _dragCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _extractColor(String coverUrl, String songId) async {
     if (coverUrl.isEmpty) return;
@@ -48,7 +64,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       final palette = await PaletteGenerator.fromImageProvider(
         FileImage(file),
         maximumColorCount: 8,
-        size: const Size(50, 50), // 降低解码尺寸
+        size: const Size(50, 50),
       );
 
       final colors = <Color>[];
@@ -139,7 +155,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     }
 
     if (_extractedFor != song.id) {
-      // ★ 延迟提取颜色，等页面进场动画结束
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Future.delayed(const Duration(milliseconds: 800), () {
           if (mounted) _extractColor(song.coverPath, song.id);
@@ -150,31 +165,38 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     final favorites = ref.watch(favoriteSongsProvider);
     final isFav = favorites.any((s) => s.globalId == song.globalId);
 
-    final cacheProgress =
-        ref.watch(audioCacheProgressProvider(song.globalId)).asData?.value ??
-            0.0;
-
     return CupertinoPageScaffold(
       child: GestureDetector(
         onVerticalDragUpdate: (details) {
-          if (details.delta.dy > 0 || _dragOffset > 0) {
-            setState(() {
-              _dragOffset += details.delta.dy;
-              if (_dragOffset < 0) _dragOffset = 0;
-            });
+          // ★ 抛弃 setState，直接通过动画控制器控制位移
+          if (details.delta.dy > 0 || _dragCtrl.value > 0) {
+            final delta = details.delta.dy / _screenHeight;
+            _dragCtrl.value = (_dragCtrl.value + delta).clamp(0.0, 1.0);
           }
         },
         onVerticalDragEnd: (details) {
-          if (_dragOffset > _screenHeight * 0.25 ||
+          // ★ 根据当前位移和手势速度决定：关闭还是回弹
+          if (_dragCtrl.value > 0.25 ||
               (details.primaryVelocity != null &&
                   details.primaryVelocity! > 800)) {
             _close();
           } else {
-            setState(() => _dragOffset = 0);
+            _dragCtrl.animateTo(
+              0.0,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+            );
           }
         },
-        child: Transform.translate(
-          offset: Offset(0, _dragOffset),
+        child: AnimatedBuilder(
+          animation: _dragCtrl,
+          builder: (context, child) {
+            // 只让这一层重绘，极大降低掉帧几率
+            return Transform.translate(
+              offset: Offset(0, _dragCtrl.value * _screenHeight),
+              child: child,
+            );
+          },
           child: _PulseBackground(
             playing: player.isPlaying,
             colors: _paletteColors,
@@ -295,8 +317,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   const SizedBox(height: 16),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
-                    child: Builder(
-                      builder: (_) {
+                    child: Consumer(
+                      builder: (context, ref, _) {
+                        final cacheProgress = ref
+                                .watch(audioCacheProgressProvider(song.globalId))
+                                .asData
+                                ?.value ??
+                            0.0;
+
                         final displayProgress =
                             _dragProgress ?? player.progress.clamp(0.0, 1.0);
                         final displayPos = _dragProgress != null
@@ -423,7 +451,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                             ),
                           ],
                         );
-                      },
+                      }
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -607,7 +635,6 @@ class _PulseBackgroundState extends State<_PulseBackground>
       duration: const Duration(milliseconds: 3200),
     );
     
-    // ★ 延迟 600ms 开启背景渲染和动画，等路由跳转完全结束，避免严重卡顿
     Future.delayed(const Duration(milliseconds: 600), () {
       if (mounted) {
         setState(() => _showEffect = true);
@@ -647,8 +674,6 @@ class _PulseBackgroundState extends State<_PulseBackground>
         return Stack(
           children: [
             Container(color: AppColors.bg),
-            
-            // ★ 只有当页面进场后，才开始渲染这些渐变层，且加上了 RepaintBoundary 隔离
             if (_showEffect)
               Positioned.fill(
                 child: RepaintBoundary(
