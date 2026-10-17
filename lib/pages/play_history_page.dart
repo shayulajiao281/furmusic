@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/song.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
 import '../theme/app_colors.dart';
@@ -12,14 +13,33 @@ class PlayHistoryPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // ★ 只 watch 数据源，不 watch 整个 player
     final recent = ref.watch(recentSongsProvider);
-    final favorites = ref.watch(favoriteSongsProvider);
-    final player = ref.watch(playerStateProvider);
-    final appNotifier = ref.read(appStateProvider.notifier);
 
+    // ★ 收藏用 Set（O(1) 查找），不再用 List.any()（O(n)）
+    final favIds = ref.watch(
+      favoriteSongsProvider.select(
+        (list) => list.map((s) => s.globalId).toSet(),
+      ),
+    );
+
+    // ★ 只订阅"当前歌 id"和"哪首歌在 loading"
+    //   position 每秒变几十次，但这两个值很少变 → 页面几乎不重建
+    final currentId = ref.watch(
+      playerStateProvider.select((s) => s.current?.globalId),
+    );
+    final loadingId = ref.watch(
+      playerStateProvider.select(
+        (s) => s.isLoading ? s.current?.globalId : null,
+      ),
+    );
+
+    // ★ hasSong 独立 select，避免跟着 current 其他字段重建
     final hasSong = ref.watch(
       playerStateProvider.select((s) => s.current != null),
     );
+
+    final appNotifier = ref.read(appStateProvider.notifier);
 
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
@@ -75,33 +95,16 @@ class PlayHistoryPage extends ConsumerWidget {
                   child: recent.isEmpty
                       ? _empty()
                       : ListView.builder(
-                          padding:
-                              const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
                           itemCount: recent.length,
                           itemBuilder: (_, i) {
                             final s = recent[i];
-                            final isFav = favorites.any(
-                              (f) => f.globalId == s.globalId,
-                            );
-                            final displaySong =
-                                s.copyWith(isFavorite: isFav);
-                            final active =
-                                player.current?.globalId == s.globalId;
-                            final isLoadingThis = player.isLoading && active;
-
-                            return SongTile(
-                              song: displaySong,
-                              active: active,
-                              loading: isLoadingThis,
-                              // ★ 用 playOrOpen
-                              onTap: () => playOrOpen(
-                                context,
-                                ref,
-                                s,
-                                queue: recent,
-                              ),
-                              onFavorite: () =>
-                                  appNotifier.toggleFavorite(s),
+                            return _HistoryTile(
+                              key: ValueKey(s.globalId),
+                              song: s,
+                              isFav: favIds.contains(s.globalId),
+                              active: currentId == s.globalId,
+                              loading: loadingId == s.globalId,
                             );
                           },
                         ),
@@ -133,4 +136,37 @@ class PlayHistoryPage extends ConsumerWidget {
       ],
     ),
   );
+}
+
+/// ★ 每项独立，避免整列表重建
+class _HistoryTile extends ConsumerWidget {
+  final Song song;
+  final bool isFav;
+  final bool active;
+  final bool loading;
+
+  const _HistoryTile({
+    super.key,
+    required this.song,
+    required this.isFav,
+    required this.active,
+    required this.loading,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return SongTile(
+      song: song.copyWith(isFavorite: isFav),
+      active: active,
+      loading: loading,
+      onTap: () {
+        // 队列 = 最新的最近播放列表
+        final queue = ref.read(recentSongsProvider);
+        playOrOpen(context, ref, song, queue: queue);
+      },
+      onFavorite: () {
+        ref.read(appStateProvider.notifier).toggleFavorite(song);
+      },
+    );
+  }
 }
