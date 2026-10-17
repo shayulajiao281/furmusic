@@ -143,7 +143,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
       }
       state = state.copyWith(position: pos, lyricIndex: idx);
 
-      // ★ 核心机制：只要播放进度大于 0，说明第一帧声音已经出来了，立刻触发后台缓存
+      // ★ 只要播放进度大于 0，说明已经开始出声，立刻触发后台缓存
       if (pos > Duration.zero) {
         final song = state.current;
         if (song != null) {
@@ -169,7 +169,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return _restore();
   }
 
-  // ★ 播放启动后触发的缓存
   Future<void> _triggerCacheIfNeeded(Song song) async {
     if (song.source == 'local') return;
     if (_cacheTriggeredSongs.contains(song.globalId)) return;
@@ -726,74 +725,95 @@ class _LazyAudioSource extends StreamAudioSource {
     );
   }
 
-  // ★ 修复 iOS 进度条不走的核心方法
+  // ★ iOS 终极修复：首次请求 HEAD 探测长度，避免 AVPlayer 卡死
   Future<StreamAudioResponse> _networkStream(
       String url, Map<String, String> headers, int? start, int? end) async {
     final client = http.Client();
+    
+    // 1. 首次请求（无 start 或 start 为 0），用 HEAD 拿准确的 Content-Length
+    int? totalLength;
+    if (start == null || start == 0) {
+      try {
+        final headReq = http.Request('HEAD', Uri.parse(url));
+        headReq.headers.addAll(headers);
+        final headResp = await client.send(headReq).timeout(const Duration(seconds: 5));
+        totalLength = headResp.contentLength;
+        if (totalLength == null) {
+          final cr = headResp.headers['content-range'];
+          if (cr != null && cr.contains('/')) {
+            totalLength = int.tryParse(cr.split('/').last);
+          }
+        }
+      } catch (e) {
+        print('⚠️ [LazyAudioSource] HEAD 探测失败: $e');
+      }
+    }
+    
+    // 2. 发 GET（只有拖动进度条才带 Range）
     final request = http.Request('GET', Uri.parse(url));
     request.headers.addAll(headers);
+    if (start != null && start > 0) {
+      final s = start;
+      final e = end != null ? '-$end' : '-';
+      request.headers['Range'] = 'bytes=$s$e';
+    }
     
-    // ★ 强制要求服务器返回 206 Partial Content，并带上文件总长度
-    final s = start ?? 0;
-    final e = end != null ? '-$end' : '-';
-    request.headers['Range'] = 'bytes=$s$e';
-
     final response = await client.send(request);
     
-    // 如果是 206 Partial Content（正常流式响应）
-    if (response.statusCode == 206) {
-      int sourceLength = 0;
-      final contentRange = response.headers['content-range']; 
+    // 3. 解析总长度
+    int? sourceLength = totalLength;
+    if (sourceLength == null) {
+      final contentRange = response.headers['content-range'];
       if (contentRange != null && contentRange.contains('/')) {
-        final totalStr = contentRange.split('/').last;
-        sourceLength = int.tryParse(totalStr) ?? 0;
+        sourceLength = int.tryParse(contentRange.split('/').last);
       }
-      
-      return StreamAudioResponse(
-        sourceLength: sourceLength > 0 ? sourceLength : null,
-        contentLength: response.contentLength,
-        offset: start ?? 0,
-        stream: response.stream,
-        contentType: response.headers['content-type'] ?? 'audio/mp4',
-      );
+    }
+    sourceLength ??= response.contentLength;
+    
+    // 4. 计算本次请求的分段长度
+    int? contentLen = response.contentLength;
+    if (contentLen == null && sourceLength != null) {
+      contentLen = sourceLength - (start ?? 0);
     }
     
-    // 如果是 200 OK（服务器不支持 Range，强行返回全量）
-    if (response.statusCode == 200) {
-      int offset = start ?? 0;
-      Stream<List<int>> stream = response.stream;
-      
-      // 如果请求的不是从头开始，需要手动跳过前面的字节
-      if (offset > 0) {
-        int skipBytes = offset;
-        stream = stream.transform<List<int>>(
-          StreamTransformer<List<int>, List<int>>.fromHandlers(
-            handleData: (List<int> data, EventSink<List<int>> sink) {
-              if (skipBytes > 0) {
-                if (data.length <= skipBytes) {
-                  skipBytes -= data.length;
-                } else {
-                  sink.add(data.sublist(skipBytes));
-                  skipBytes = 0;
-                }
+    // 5. 强制兜底 Content-Type，防止 B站 返回 application/octet-stream
+    String contentType = response.headers['content-type'] ?? 'audio/mp4';
+    if (!contentType.contains('audio') && !contentType.contains('video')) {
+      contentType = 'audio/mp4';
+    }
+    
+    // 6. 计算 offset（只有 206 才使用 start，200 全量要手动跳过）
+    int offset = response.statusCode == 206 ? (start ?? 0) : 0;
+    Stream<List<int>> stream = response.stream;
+    
+    // 7. 处理服务器不支持 Range 返回 200 的情况
+    if (response.statusCode == 200 && start != null && start > 0) {
+      int skipBytes = start;
+      stream = stream.transform<List<int>>(
+        StreamTransformer<List<int>, List<int>>.fromHandlers(
+          handleData: (List<int> data, EventSink<List<int>> sink) {
+            if (skipBytes > 0) {
+              if (data.length <= skipBytes) {
+                skipBytes -= data.length;
               } else {
-                sink.add(data);
+                sink.add(data.sublist(skipBytes));
+                skipBytes = 0;
               }
-            },
-          ),
-        );
-        offset = 0; 
-      }
-
-      return StreamAudioResponse(
-        sourceLength: response.contentLength,
-        contentLength: response.contentLength,
-        offset: offset,
-        stream: stream,
-        contentType: response.headers['content-type'] ?? 'audio/mp4',
+            } else {
+              sink.add(data);
+            }
+          },
+        ),
       );
+      offset = 0;
     }
     
-    throw Exception('音频流请求失败: HTTP ${response.statusCode}');
+    return StreamAudioResponse(
+      sourceLength: sourceLength,
+      contentLength: contentLen,
+      offset: offset,
+      stream: stream,
+      contentType: contentType,
+    );
   }
 }

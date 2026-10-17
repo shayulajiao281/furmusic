@@ -88,7 +88,14 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     });
 
     final sources = ref.read(allSourcesProvider);
-    await Future.wait(sources.map((s) => _fetchPage(s, 1)));
+    final futures = sources.map((s) => _fetchPage(s, 1)).toList();
+
+    try {
+      // 等待全部并发结束，设置 10 秒全局兜底防卡死
+      await Future.wait(futures).timeout(const Duration(seconds: 10));
+    } catch (e) {
+      print('⚠️ [discover] 搜索整体超时或部分出错: $e');
+    }
 
     if (!mounted) return;
     setState(() => _loading = false);
@@ -109,10 +116,16 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
 
     setState(() => _loadingMore = true);
 
-    await Future.wait(targets.map((s) {
+    final futures = targets.map((s) {
       final next = (_srcPage[s.id] ?? 1) + 1;
       return _fetchPage(s, next);
-    }));
+    }).toList();
+
+    try {
+      await Future.wait(futures).timeout(const Duration(seconds: 10));
+    } catch (e) {
+      print('⚠️ [discover] 加载更多超时: $e');
+    }
 
     if (!mounted) return;
     setState(() => _loadingMore = false);
@@ -132,7 +145,12 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
         _srcHasMore[source.id] = r.hasMore;
       });
     } catch (e) {
-      _srcHasMore[source.id] = false;
+      print('❌ [discover] ${source.name} 搜索失败: $e');
+      if (mounted) {
+        setState(() {
+          _srcHasMore[source.id] = false;
+        });
+      }
     }
   }
 
@@ -161,7 +179,6 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
     final results = _displayResults(hideVip);
     final showFooter = _shouldShowFooter;
 
-    // ★ 精准订阅
     final currentId = ref.watch(
       playerStateProvider.select((s) => s.current?.globalId),
     );
