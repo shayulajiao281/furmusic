@@ -91,6 +91,10 @@ class PlayerNotifier extends Notifier<PlayerState> {
   bool _switching = false;
   DateTime? _switchLockTime;
 
+  // ★ 缓存 URL 和已触发下载的标记
+  final Map<String, String> _resolvedUrls = {};
+  final Set<String> _cacheTriggeredSongs = {};
+
   static const _lockTimeout = 20;
 
   @override
@@ -138,6 +142,14 @@ class PlayerNotifier extends Notifier<PlayerState> {
         }
       }
       state = state.copyWith(position: pos, lyricIndex: idx);
+
+      // ★ 核心机制：只要播放进度大于 0，说明第一帧声音已经出来了，立刻触发后台缓存
+      if (pos > Duration.zero) {
+        final song = state.current;
+        if (song != null) {
+          _triggerCacheIfNeeded(song);
+        }
+      }
     });
 
     _player.durationStream.listen((d) {
@@ -155,6 +167,35 @@ class PlayerNotifier extends Notifier<PlayerState> {
     });
 
     return _restore();
+  }
+
+  // ★ 播放启动后触发的缓存
+  Future<void> _triggerCacheIfNeeded(Song song) async {
+    if (song.source == 'local') return;
+    if (_cacheTriggeredSongs.contains(song.globalId)) return;
+
+    final cached = await AudioCache.get(song.globalId);
+    if (cached != null) {
+      _cacheTriggeredSongs.add(song.globalId);
+      return;
+    }
+    if (AudioCache.isDownloading(song.globalId)) {
+      _cacheTriggeredSongs.add(song.globalId);
+      return;
+    }
+
+    final url = _resolvedUrls[song.globalId];
+    if (url == null || !url.startsWith('http')) return;
+
+    _cacheTriggeredSongs.add(song.globalId);
+    
+    final source = ref.read(sourceByIdProvider)(song.source);
+    print('📥 [cache] 播放已启动，立刻触发后台缓存: ${song.title}');
+    AudioCache.download(
+      song.globalId,
+      url,
+      headers: source.audioHeaders,
+    ).then((_) => AudioCache.trim()).catchError((_) {});
   }
 
   bool get _isSwitching {
@@ -300,11 +341,18 @@ class PlayerNotifier extends Notifier<PlayerState> {
   Future<Song?> _resolveOne(Song song) async {
     if (song.source == 'local') return song;
 
+    // 1. 查本地缓存
     final cached = await AudioCache.get(song.globalId);
     if (cached != null) {
       return song.copyWith(audioPath: cached);
     }
 
+    // 2. 如果之前已经解析过，直接返回
+    if (_resolvedUrls.containsKey(song.globalId)) {
+      return song.copyWith(audioPath: _resolvedUrls[song.globalId]);
+    }
+
+    // 3. 解析网络 URL
     String? url = song.audioPath;
     if (url.isEmpty || !url.startsWith('http')) {
       final source = ref.read(sourceByIdProvider)(song.source);
@@ -316,15 +364,8 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     if (url == null || url.isEmpty) return null;
 
-    // ★ 延迟启动后台下载，让流播放先抢占带宽（解决 iOS 上 B站卡死问题）
-    final source = ref.read(sourceByIdProvider)(song.source);
-    Future.delayed(const Duration(seconds: 3), () {
-      AudioCache.download(
-        song.globalId,
-        url!,
-        headers: source.audioHeaders,
-      ).then((_) => AudioCache.trim()).catchError((_) {});
-    });
+    // 4. 记录 URL，供 positionStream 触发缓存时直接使用
+    _resolvedUrls[song.globalId] = url;
 
     return song.copyWith(audioPath: url);
   }
@@ -659,14 +700,12 @@ class _LazyAudioSource extends StreamAudioSource {
 
   @override
   Future<StreamAudioResponse> request([int? start, int? end]) async {
-    // 1. 查本地缓存，有就秒播
     final cachedPath = await AudioCache.get(song.globalId);
     if (cachedPath != null) {
       print('⚡ [LazyAudioSource] 命中本地缓存: ${song.title}');
       return _fileStream(cachedPath, start, end);
     }
 
-    // 2. 没缓存，解析 URL（内部会自动触发后台下载，不阻塞这里）
     final resolved = await notifier._resolveOne(song);
     if (resolved == null || resolved.audioPath.isEmpty) {
       throw Exception('无法解析音频链接');
@@ -675,7 +714,6 @@ class _LazyAudioSource extends StreamAudioSource {
     final path = resolved.audioPath;
     final source = ref.read(sourceByIdProvider)(song.source);
 
-    // 3. 立刻返回网络流，让播放器边下边播
     print('🌐 [LazyAudioSource] 走网络流播放: ${song.title}');
     return _networkStream(path, source.audioHeaders, start, end);
   }
@@ -692,7 +730,6 @@ class _LazyAudioSource extends StreamAudioSource {
     );
   }
 
-  // ★ 修复 B 站音频在 iOS 上无限缓冲的问题
   Future<StreamAudioResponse> _networkStream(
       String url, Map<String, String> headers, int? start, int? end) async {
     final client = http.Client();
@@ -700,7 +737,6 @@ class _LazyAudioSource extends StreamAudioSource {
     request.headers.addAll(headers);
     
     // 只有当明确要求拖动进度时，才发送 Range 头
-    // 很多 CDN 在收到 Range: bytes=0- 时，反而返回非标准的响应导致 iOS 卡死
     if (start != null && start > 0) {
       final s = start;
       final e = end != null ? '-$end' : '-';
