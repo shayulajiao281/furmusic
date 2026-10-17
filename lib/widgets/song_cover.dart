@@ -44,7 +44,6 @@ class _SongCoverState extends State<SongCover> {
       return;
     }
 
-    // ★ 离线优先：先查本地缓存
     final cached = ImageCacheManager.getCached(path);
     if (cached != null) {
       if (mounted) setState(() { _file = cached; _loadedFor = path; });
@@ -72,6 +71,14 @@ class _SongCoverState extends State<SongCover> {
 
   @override
   Widget build(BuildContext context) {
+    // ★ 限制大图解码尺寸，防止高清图导致 UI 卡顿
+    int? cacheSize;
+    if (widget.size.isFinite && widget.size > 0) {
+      cacheSize = (widget.size * MediaQuery.of(context).devicePixelRatio).toInt();
+    } else {
+      cacheSize = 800; // 播放页传 infinity 时的兜底最大尺寸
+    }
+
     return Container(
       width: widget.size,
       height: widget.size,
@@ -87,6 +94,7 @@ class _SongCoverState extends State<SongCover> {
               height: widget.size,
               fit: BoxFit.cover,
               gaplessPlayback: true,
+              cacheWidth: cacheSize, // ★ 强制降分辨率解码
               errorBuilder: (_, __, ___) => _placeholder(),
             )
           : _placeholder(),

@@ -42,13 +42,13 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
 
     _extractedFor = songId;
     try {
-      final file = ImageCacheManager.getCached(coverUrl) ??
-          await ImageCacheManager.get(coverUrl);
+      final file = ImageCacheManager.getCached(coverUrl);
       if (file == null) return;
 
       final palette = await PaletteGenerator.fromImageProvider(
         FileImage(file),
         maximumColorCount: 8,
+        size: const Size(30, 30), // ★ 小窗取色也限制尺寸
       );
       final color = palette.dominantColor?.color ??
           palette.vibrantColor?.color ??
@@ -89,7 +89,6 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
     final notifier = ref.read(playerStateProvider.notifier);
     final loading = player.isLoading;
 
-    // ★ 缓存进度
     final cacheProgress = expanded
         ? (ref.watch(audioCacheProgressProvider(song.globalId)).asData?.value ??
             0.0)
@@ -410,7 +409,6 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
             child: Stack(
               alignment: Alignment.centerLeft,
               children: [
-                // ① 背景：白色20%（深色背景上更清晰）
                 Container(
                   height: 3,
                   width: width,
@@ -419,7 +417,6 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
-                // ② 缓存层：白色50%
                 if (renderBuffer > 0.001)
                   AnimatedContainer(
                     duration: const Duration(milliseconds: 250),
@@ -431,7 +428,6 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
-                // ③ 播放进度
                 Container(
                   height: 3,
                   width: thumbX,
@@ -440,7 +436,6 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
-                // ④ 播放头
                 Positioned(
                   left: (thumbX - 6).clamp(0.0, width - 12),
                   child: Container(

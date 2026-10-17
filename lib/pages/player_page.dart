@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart'; // ★ 增加这一行引入 Material 库
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:palette_generator/palette_generator.dart';
@@ -39,7 +39,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     _extractedFor = songId;
 
     try {
-      // 仅从本地缓存提取颜色，没有缓存就跳过（使用默认主色），防止下载卡顿
       final file = ImageCacheManager.getCached(coverUrl);
       if (file == null) {
         _extracting = false;
@@ -49,8 +48,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       final palette = await PaletteGenerator.fromImageProvider(
         FileImage(file),
         maximumColorCount: 8,
-        // ★ 极其关键：限制图片解码尺寸为 50x50，避免高清大图导致 UI 卡顿
-        size: const Size(50, 50),
+        size: const Size(50, 50), // 降低解码尺寸
       );
 
       final colors = <Color>[];
@@ -141,8 +139,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     }
 
     if (_extractedFor != song.id) {
+      // ★ 延迟提取颜色，等页面进场动画结束
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _extractColor(song.coverPath, song.id);
+        Future.delayed(const Duration(milliseconds: 800), () {
+          if (mounted) _extractColor(song.coverPath, song.id);
+        });
       });
     }
 
@@ -596,6 +597,7 @@ class _PulseBackground extends StatefulWidget {
 class _PulseBackgroundState extends State<_PulseBackground>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
+  bool _showEffect = false;
 
   @override
   void initState() {
@@ -604,16 +606,23 @@ class _PulseBackgroundState extends State<_PulseBackground>
       vsync: this,
       duration: const Duration(milliseconds: 3200),
     );
-    if (widget.playing) {
-      _ctrl.repeat(reverse: true);
-    }
+    
+    // ★ 延迟 600ms 开启背景渲染和动画，等路由跳转完全结束，避免严重卡顿
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (mounted) {
+        setState(() => _showEffect = true);
+        if (widget.playing) {
+          _ctrl.repeat(reverse: true);
+        }
+      }
+    });
   }
 
   @override
   void didUpdateWidget(covariant _PulseBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.playing != oldWidget.playing) {
-      if (widget.playing) {
+      if (widget.playing && _showEffect) {
         _ctrl.repeat(reverse: true);
       } else {
         _ctrl.stop();
@@ -638,78 +647,89 @@ class _PulseBackgroundState extends State<_PulseBackground>
         return Stack(
           children: [
             Container(color: AppColors.bg),
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: RadialGradient(
-                    center: Alignment(
-                      -0.7 + 0.35 * math.sin(t * 2 * math.pi),
-                      -0.65 + 0.3 * math.cos(t * 2 * math.pi),
-                    ),
-                    radius: 1.15 + 0.35 * t,
-                    colors: [
-                      _c(colors, 0).withValues(alpha: 0.55 + 0.25 * t),
-                      AppColors.bg.withValues(alpha: 0.0),
+            
+            // ★ 只有当页面进场后，才开始渲染这些渐变层，且加上了 RepaintBoundary 隔离
+            if (_showEffect)
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: RadialGradient(
+                              center: Alignment(
+                                -0.7 + 0.35 * math.sin(t * 2 * math.pi),
+                                -0.65 + 0.3 * math.cos(t * 2 * math.pi),
+                              ),
+                              radius: 1.15 + 0.35 * t,
+                              colors: [
+                                _c(colors, 0).withValues(alpha: 0.55 + 0.25 * t),
+                                AppColors.bg.withValues(alpha: 0.0),
+                              ],
+                              stops: const [0.0, 1.0],
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: RadialGradient(
+                              center: Alignment(
+                                0.8 - 0.3 * math.cos(t * 2 * math.pi),
+                                0.9 - 0.3 * math.sin(t * 2 * math.pi),
+                              ),
+                              radius: 1.0 + 0.4 * t,
+                              colors: [
+                                _c(colors, 1).withValues(alpha: 0.45 + 0.25 * (1 - t)),
+                                AppColors.bg.withValues(alpha: 0.0),
+                              ],
+                              stops: const [0.0, 1.0],
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: RadialGradient(
+                              center: Alignment(
+                                0.7 + 0.2 * math.sin(t * 2 * math.pi + 1.5),
+                                -0.5 + 0.25 * math.cos(t * 2 * math.pi + 1.5),
+                              ),
+                              radius: 0.9 + 0.35 * (1 - t),
+                              colors: [
+                                _c(colors, 2).withValues(alpha: 0.35 + 0.3 * t),
+                                AppColors.bg.withValues(alpha: 0.0),
+                              ],
+                              stops: const [0.0, 1.0],
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: RadialGradient(
+                              center: Alignment(
+                                -0.5 + 0.25 * math.cos(t * 2 * math.pi + 3.0),
+                                0.8 + 0.25 * math.sin(t * 2 * math.pi + 3.0),
+                              ),
+                              radius: 0.85 + 0.3 * (1 - t),
+                              colors: [
+                                _c(colors, 3).withValues(alpha: 0.3 + 0.25 * t),
+                                AppColors.bg.withValues(alpha: 0.0),
+                              ],
+                              stops: const [0.0, 1.0],
+                            ),
+                          ),
+                        ),
+                      ),
                     ],
-                    stops: const [0.0, 1.0],
                   ),
                 ),
               ),
-            ),
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: RadialGradient(
-                    center: Alignment(
-                      0.8 - 0.3 * math.cos(t * 2 * math.pi),
-                      0.9 - 0.3 * math.sin(t * 2 * math.pi),
-                    ),
-                    radius: 1.0 + 0.4 * t,
-                    colors: [
-                      _c(colors, 1).withValues(alpha: 0.45 + 0.25 * (1 - t)),
-                      AppColors.bg.withValues(alpha: 0.0),
-                    ],
-                    stops: const [0.0, 1.0],
-                  ),
-                ),
-              ),
-            ),
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: RadialGradient(
-                    center: Alignment(
-                      0.7 + 0.2 * math.sin(t * 2 * math.pi + 1.5),
-                      -0.5 + 0.25 * math.cos(t * 2 * math.pi + 1.5),
-                    ),
-                    radius: 0.9 + 0.35 * (1 - t),
-                    colors: [
-                      _c(colors, 2).withValues(alpha: 0.35 + 0.3 * t),
-                      AppColors.bg.withValues(alpha: 0.0),
-                    ],
-                    stops: const [0.0, 1.0],
-                  ),
-                ),
-              ),
-            ),
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: RadialGradient(
-                    center: Alignment(
-                      -0.5 + 0.25 * math.cos(t * 2 * math.pi + 3.0),
-                      0.8 + 0.25 * math.sin(t * 2 * math.pi + 3.0),
-                    ),
-                    radius: 0.85 + 0.3 * (1 - t),
-                    colors: [
-                      _c(colors, 3).withValues(alpha: 0.3 + 0.25 * t),
-                      AppColors.bg.withValues(alpha: 0.0),
-                    ],
-                    stops: const [0.0, 1.0],
-                  ),
-                ),
-              ),
-            ),
             widget.child,
           ],
         );
