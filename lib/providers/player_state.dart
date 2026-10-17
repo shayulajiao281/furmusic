@@ -316,13 +316,15 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
     if (url == null || url.isEmpty) return null;
 
+    // ★ 延迟启动后台下载，让流播放先抢占带宽（解决 iOS 上 B站卡死问题）
     final source = ref.read(sourceByIdProvider)(song.source);
-    // ★ 触发后台下载（不阻塞返回）
-    AudioCache.download(
-      song.globalId,
-      url,
-      headers: source.audioHeaders,
-    ).then((_) => AudioCache.trim()).catchError((_) {});
+    Future.delayed(const Duration(seconds: 3), () {
+      AudioCache.download(
+        song.globalId,
+        url!,
+        headers: source.audioHeaders,
+      ).then((_) => AudioCache.trim()).catchError((_) {});
+    });
 
     return song.copyWith(audioPath: url);
   }
@@ -690,61 +692,47 @@ class _LazyAudioSource extends StreamAudioSource {
     );
   }
 
-  // ★ 修复后的 B 站网络流请求（带 Range 头，彻底解决卡顿不出声）
+  // ★ 修复 B 站音频在 iOS 上无限缓冲的问题
   Future<StreamAudioResponse> _networkStream(
       String url, Map<String, String> headers, int? start, int? end) async {
     final client = http.Client();
     final request = http.Request('GET', Uri.parse(url));
     request.headers.addAll(headers);
     
-    // ★ 强制带上 Range 头，即使是 0 也要带，否则某些 CDN 节点返回 200 会导致 just_audio 卡死
-    final s = start ?? 0;
-    final e = end != null ? '-$end' : '-';
-    request.headers['Range'] = 'bytes=$s$e';
+    // 只有当明确要求拖动进度时，才发送 Range 头
+    // 很多 CDN 在收到 Range: bytes=0- 时，反而返回非标准的响应导致 iOS 卡死
+    if (start != null && start > 0) {
+      final s = start;
+      final e = end != null ? '-$end' : '-';
+      request.headers['Range'] = 'bytes=$s$e';
+    }
 
     final response = await client.send(request);
     
-    int sourceLength = 0;
+    // 如果服务器返回 200，说明不支持 Range 或者直接返回了全量流
+    if (response.statusCode == 200) {
+      return StreamAudioResponse(
+        sourceLength: response.contentLength,
+        contentLength: response.contentLength,
+        offset: 0, // 返回全量，强制 offset 为 0，避免 iOS 解析错乱
+        stream: response.stream,
+        contentType: response.headers['content-type'] ?? 'audio/mp4', // B站大多为 m4a
+      );
+    }
+    
+    // 处理标准的 206 Partial Content
+    int sourceLength = response.contentLength ?? 0;
     final contentRange = response.headers['content-range']; // bytes 0-1234/5678
     if (contentRange != null && contentRange.contains('/')) {
-      final totalStr = contentRange.split('/').last;
-      sourceLength = int.tryParse(totalStr) ?? 0;
-    }
-    if (sourceLength == 0) {
-      sourceLength = response.contentLength ?? 0;
-    }
-
-    int offset = start ?? 0;
-    Stream<List<int>> stream = response.stream;
-    
-    // 如果服务器不认 Range，强行返回了 200 状态码，我们需要跳过已播放的字节
-    if (offset > 0 && response.statusCode == 200) {
-      int skipBytes = offset;
-      stream = stream.transform<List<int>>(
-        StreamTransformer<List<int>, List<int>>.fromHandlers(
-          handleData: (List<int> data, EventSink<List<int>> sink) {
-            if (skipBytes > 0) {
-              if (data.length <= skipBytes) {
-                skipBytes -= data.length;
-              } else {
-                sink.add(data.sublist(skipBytes));
-                skipBytes = 0;
-              }
-            } else {
-              sink.add(data);
-            }
-          },
-        ),
-      );
-      offset = 0;
+      sourceLength = int.tryParse(contentRange.split('/').last) ?? 0;
     }
 
     return StreamAudioResponse(
       sourceLength: sourceLength,
       contentLength: response.contentLength,
-      offset: offset,
-      stream: stream,
-      contentType: response.headers['content-type'] ?? 'audio/mpeg',
+      offset: start ?? 0,
+      stream: response.stream,
+      contentType: response.headers['content-type'] ?? 'audio/mp4',
     );
   }
 }
