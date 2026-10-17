@@ -147,10 +147,8 @@ class PlayerNotifier extends Notifier<PlayerState> {
       }
     });
 
-    // 监听播放错误（用于 iOS 直接报错时的提示）
     _player.playbackEventStream.listen((event) {}, onError: (Object e, StackTrace st) {
       print('❌ [player] 播放发生错误: $e');
-      // 如果是切换到下一首时出错，忽略；如果是当前首歌出错，提示
       if (state.isLoading) {
         _reportError('当前歌曲无法播放，可能音源失效');
       }
@@ -334,9 +332,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     return song.copyWith(audioPath: url);
   }
 
-  // ═══════════════════════════════════════════
-  // 自定义 StreamAudioSource（完美解决 iOS 问题）
-  // ═══════════════════════════════════════════
   AudioSource _buildAudioSource(Song s) {
     return _LazyAudioSource(s, this, ref);
   }
@@ -378,7 +373,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
       await _forceStop();
 
-      // 构建整个列表的 source (使用懒加载)
       final initialIndex = list.indexWhere((s) => s.globalId == song.globalId);
       final sources = list.map((s) => _buildAudioSource(s)).toList();
 
@@ -395,7 +389,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
               initialIndex: initialIndex,
               initialPosition: Duration.zero,
             )
-            .timeout(const Duration(seconds: 30)); // 首次请求慢，时间给长点
+            .timeout(const Duration(seconds: 30));
         _hasSource = true;
       } catch (e) {
         print('❌ [player] setAudioSource 失败: $e');
@@ -646,7 +640,7 @@ final playerStateProvider = NotifierProvider<PlayerNotifier, PlayerState>(
 );
 
 // ═══════════════════════════════════════════════════════════
-// ★ iOS 破解核心：自定义流式懒加载音源
+// ★ iOS 终极防卡顿流音源：优先本地 / 快速等待
 // ═══════════════════════════════════════════════════════════
 class _LazyAudioSource extends StreamAudioSource {
   final Song song;
@@ -671,56 +665,99 @@ class _LazyAudioSource extends StreamAudioSource {
 
   @override
   Future<StreamAudioResponse> request([int? start, int? end]) async {
-    // 真正开始播放这一首时，才去解析真实的 URL 或者查本地缓存
     print('🔍 [LazyAudioSource] 开始请求音频: ${song.title}');
     
+    // 1. 查本地缓存
+    final cachedPath = await AudioCache.get(song.globalId);
+    if (cachedPath != null) {
+      print('⚡ [LazyAudioSource] 命中本地缓存: ${song.title}');
+      return _fileStream(cachedPath, start, end);
+    }
+
+    // 2. 解析 URL
     final resolved = await notifier._resolveOne(song);
     if (resolved == null || resolved.audioPath.isEmpty) {
       throw Exception('无法解析音频链接');
     }
 
     final path = resolved.audioPath;
-    final isLocal = !path.startsWith('http');
-
-    // 如果是本地缓存文件，直接读文件流
-    if (isLocal) {
-      final file = File(path);
-      final length = await file.length();
-      return StreamAudioResponse(
-        sourceLength: length,
-        contentLength: (end ?? length) - (start ?? 0),
-        offset: start ?? 0,
-        stream: file.openRead(start ?? 0, end),
-        contentType: 'audio/mpeg',
-      );
-    }
-
-    // 如果是网络流，发起 HTTP 请求（支持 Range 拖动）
     final source = ref.read(sourceByIdProvider)(song.source);
-    final request = http.Request('GET', Uri.parse(path));
-    
-    // 加上原音源需要的 Headers（比如 B站的 Referer）
-    if (source.audioHeaders.isNotEmpty) {
-      request.headers.addAll(source.audioHeaders);
-    }
-    
-    // ★ iOS 拖动进度条所必需的 Range 头
-    if (start != null || end != null) {
-      final startStr = start?.toString() ?? '';
-      final endStr = end?.toString() ?? '';
-      request.headers['Range'] = 'bytes=$startStr-$endStr';
+
+    // 3. ★ 核心优化：如果没缓存，我们等最多 2 秒尝试把它下下来
+    final quickCached = await AudioCache.downloadAndWait(
+      song.globalId,
+      path,
+      headers: source.audioHeaders,
+      timeout: const Duration(seconds: 2),
+    );
+    if (quickCached != null) {
+      print('⚡ [LazyAudioSource] 极速缓存完成，切换本地播放: ${song.title}');
+      return _fileStream(quickCached, start, end);
     }
 
-    final response = await request.send();
+    // 4. 如果 2 秒没下完，退回网络流播放
+    print('🌐 [LazyAudioSource] 下载超时，走网络流: ${song.title}');
+    return _networkStream(path, source.audioHeaders, start, end);
+  }
 
-    // 注意：如果服务器不支持 Range 返回了 200，或者支持返回了 206，都能正常播放
-    final contentLength = response.contentLength;
+  StreamAudioResponse _fileStream(String path, int? start, int? end) {
+    final file = File(path);
+    final length = file.lengthSync();
+    return StreamAudioResponse(
+      sourceLength: length,
+      contentLength: (end ?? length) - (start ?? 0),
+      offset: start ?? 0,
+      stream: file.openRead(start ?? 0, end),
+      contentType: 'audio/mpeg',
+    );
+  }
+
+  Future<StreamAudioResponse> _networkStream(
+      String url, Map<String, String> headers, int? start, int? end) async {
+    final client = http.Client();
+    final request = http.Request('GET', Uri.parse(url));
+    request.headers.addAll(headers);
+    
+    if (start != null) {
+      request.headers['Range'] = 'bytes=$start-${end ?? ''}';
+    }
+
+    final response = await client.send(request);
+    
+    int offset = start ?? 0;
+    
+    // ★ 修复 1：明确指定为 Stream<List<int>>
+    Stream<List<int>> stream = response.stream;
+    
+    // 处理服务端忽略 Range 返回 200 的情况，手动跳过前面的字节
+    if (offset > 0 && response.statusCode == 200) {
+      int skipBytes = offset;
+      
+      // ★ 修复 2：明确指定 StreamTransformer 的泛型
+      stream = stream.transform<List<int>>(
+        StreamTransformer<List<int>, List<int>>.fromHandlers(
+          handleData: (List<int> data, EventSink<List<int>> sink) {
+            if (skipBytes > 0) {
+              if (data.length <= skipBytes) {
+                skipBytes -= data.length;
+              } else {
+                sink.add(data.sublist(skipBytes));
+                skipBytes = 0;
+              }
+            } else {
+              sink.add(data);
+            }
+          },
+        ),
+      );
+      offset = 0;
+    }
 
     return StreamAudioResponse(
-      sourceLength: contentLength, // 告诉播放器总长度（如果服务器返回了）
-      contentLength: contentLength,
-      offset: start ?? 0,
-      stream: response.stream,
+      sourceLength: response.contentLength,
+      contentLength: response.contentLength,
+      offset: offset,
+      stream: stream,
       contentType: response.headers['content-type'] ?? 'audio/mpeg',
     );
   }
