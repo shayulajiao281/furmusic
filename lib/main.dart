@@ -21,6 +21,7 @@ Future<void> main() async {
 
   // ★ 建立缓存索引
   await AudioCache.init();
+
   await ImageCacheManager.init();
 
   AudioCache.trim().catchError((_) {});
