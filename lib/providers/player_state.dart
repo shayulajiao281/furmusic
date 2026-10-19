@@ -97,11 +97,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   int _consecutiveErrors = 0;
   DateTime? _lastErrorTime;
 
-  /// 切换锁：只屏蔽 processingState / currentIndex / position / duration，
-  /// 不屏蔽 playingStream
   bool _switching = false;
-
-  /// 播放令牌：新点击取代旧点击
   int _playToken = 0;
 
   @override
@@ -127,7 +123,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   }
 
   void _bindEngineEvents() {
-    // ★ isPlaying 永远由真实 playing 驱动，不屏蔽
     _engine.player.playingStream.listen(
       (playing) {
         state = state.copyWith(isPlaying: playing);
@@ -138,7 +133,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       },
     );
 
-    // ★ isLoading 由 processingState 驱动，切换期间屏蔽
     _engine.player.processingStateStream.listen(
       (ps) {
         if (_switching) return;
@@ -435,34 +429,23 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     return song.copyWith(audioPath: url);
   }
 
-  /// 只解析 target（priority），其它未解析的歌跳过
+  /// ★ 核心修复：5 轮优先级 —— 本地 → 缓存 → 内存缓存 → 持久化 http → 网络
   Future<List<Song>> _resolveAll(List<Song> list, {Song? priority}) async {
     final slots = List<Song?>.filled(list.length, null);
 
-    // 第一轮：已解析/已缓存的直接占位
+    // 第一轮：本地歌
     for (var i = 0; i < list.length; i++) {
       final s = list[i];
       if (s.source == 'local') {
         if (File(s.audioPath).existsSync()) slots[i] = s;
-        continue;
-      }
-      if (s.audioPath.startsWith('http')) {
-        slots[i] = s;
-        continue;
-      }
-      if (_resolvedUrls.containsKey(s.globalId)) {
-        slots[i] = s.copyWith(audioPath: _resolvedUrls[s.globalId]);
-        continue;
       }
     }
 
-    // 第二轮：异步检查本地缓存
+    // ★ 第二轮：缓存优先（断网也能播）
     for (var i = 0; i < list.length; i++) {
       if (slots[i] != null) continue;
       final s = list[i];
       if (s.source == 'local') continue;
-      if (s.audioPath.startsWith('http')) continue;
-      if (_resolvedUrls.containsKey(s.globalId)) continue;
 
       final cached = await AudioCache.get(s.globalId);
       if (cached != null) {
@@ -475,7 +458,29 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       }
     }
 
-    // 第三轮：只解析 priority
+    // 第三轮：内存缓存（本次会话解析过的）
+    for (var i = 0; i < list.length; i++) {
+      if (slots[i] != null) continue;
+      final s = list[i];
+      if (s.source == 'local') continue;
+
+      if (_resolvedUrls.containsKey(s.globalId)) {
+        slots[i] = s.copyWith(audioPath: _resolvedUrls[s.globalId]);
+      }
+    }
+
+    // 第四轮：持久化的 http URL（上次播放时解析的）
+    for (var i = 0; i < list.length; i++) {
+      if (slots[i] != null) continue;
+      final s = list[i];
+      if (s.source == 'local') continue;
+
+      if (s.audioPath.startsWith('http')) {
+        slots[i] = s;
+      }
+    }
+
+    // 第五轮：只解析 priority（唯一走网络的）
     if (priority != null) {
       for (var i = 0; i < list.length; i++) {
         if (slots[i] != null) continue;
@@ -552,10 +557,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     return true;
   }
 
-  // ═══════════════════════════════════════════
-  // 播放入口
-  // ═══════════════════════════════════════════
-
   Future<bool> playSong(
     Song song, {
     List<Song>? queue,
@@ -568,10 +569,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     if (_engine.hasSource) {
       await _engine.pause();
     }
-    if (myToken != _playToken) {
-      print('🚫 [player] playSong 被新的点击取代');
-      return false;
-    }
+    if (myToken != _playToken) return false;
 
     if (_engine.hasSource && _isSameQueue(list)) {
       final idx = _queue.indexWhere((s) => s.globalId == song.globalId);
@@ -988,7 +986,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     } else {
       unawaited(_engine.play());
     }
-    // ★ 不手动设 state.isPlaying，由 playingStream 推
   }
 
   Future<void> seek(Duration pos) async {
