@@ -535,7 +535,7 @@ class PlayerNotifier extends Notifier<PlayerState> {
     try {
       await _player.play();
     } catch (e) {
-      print('❌ [player] togglePlay 失败: $e');
+      print('❌ [player] togglePlay 失败123: $e');
       await _resetPlayer();
       state = state.copyWith(isPlaying: false, isLoading: false);
       final s = state.current;
