@@ -93,14 +93,11 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   final Map<String, String> _resolvedUrls = {};
   final Set<String> _cacheTriggeredSongs = {};
 
-  /// 歌词请求版本号，防止旧请求覆盖新歌词
   int _lyricRequestId = 0;
-
-  /// 连续错误计数（带时间窗口）
   int _consecutiveErrors = 0;
   DateTime? _lastErrorTime;
 
-  /// ★ 切换锁：切歌期间屏蔽所有 stream，防止旧歌状态覆盖 UI
+  /// 切换锁：切歌期间屏蔽所有 stream，防止旧状态覆盖新 UI
   bool _switching = false;
 
   @override
@@ -128,7 +125,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   void _bindEngineEvents() {
     _engine.player.playerStateStream.listen(
       (ps) {
-        if (_switching) return; // ★
+        if (_switching) return;
         state = state.copyWith(
           isPlaying: ps.playing,
           isLoading:
@@ -145,7 +142,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
 
   void _bindPlayerStreams() {
     _engine.player.currentIndexStream.listen((idx) {
-      if (_switching) return; // ★
+      if (_switching) return;
       if (idx == null || idx < 0 || idx >= _queue.length) return;
       final song = _queue[idx];
       if (state.current?.globalId == song.globalId) return;
@@ -164,7 +161,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     });
 
     _engine.player.positionStream.listen((pos) {
-      if (_switching) return; // ★
+      if (_switching) return;
       int idx = -1;
       final sec = pos.inMilliseconds / 1000.0;
       for (int i = 0; i < state.lyric.length; i++) {
@@ -183,7 +180,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     });
 
     _engine.player.durationStream.listen((d) {
-      if (_switching) return; // ★
+      if (_switching) return;
       if (d != null && d > Duration.zero) {
         _lastKnownDuration = d;
         state = state.copyWith(duration: d);
@@ -247,7 +244,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
 
     String? url = _resolvedUrls[song.globalId];
     if (url == null || !url.startsWith('http')) {
-      // 重启后 _resolvedUrls 为空，主动解析一次
       try {
         final source = ref.read(sourceByIdProvider)(song.source);
         url = await source.getSongUrl(song.id);
@@ -266,7 +262,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       url,
       headers: source.audioHeaders,
     ).then((_) => AudioCache.trim()).catchError((e) {
-      // ★ 失败移除标记，下次播放还能重试
       _cacheTriggeredSongs.remove(song.globalId);
       print('⚠️ [cache] 下载失败，已移除标记: ${song.title} → $e');
     });
@@ -289,7 +284,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     if (state.expanded) state = state.copyWith(expanded: false);
   }
 
-  /// 从持久化恢复时，本地缓存路径不可信，一律清空
   Song _sanitizeRestoredSong(Song s) {
     if (s.source == 'local') return s;
     final path = s.audioPath;
@@ -429,27 +423,20 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     return song.copyWith(audioPath: url);
   }
 
-  /// ★ 加速版：已解析的歌瞬间返回，只有真正未解析的才走网络
+  /// 加速版：已解析的歌瞬间返回
   Future<List<Song>> _resolveAll(List<Song> list) async {
     final resolved = await Future.wait(
       list.map((s) async {
-        // 1. 本地歌：文件存在即可
         if (s.source == 'local') {
           if (File(s.audioPath).existsSync()) return s;
           return null;
         }
-
-        // 2. audioPath 已经是 http：之前解析过，直接用
         if (s.audioPath.startsWith('http')) {
           return s;
         }
-
-        // 3. 内存缓存命中
         if (_resolvedUrls.containsKey(s.globalId)) {
           return s.copyWith(audioPath: _resolvedUrls[s.globalId]);
         }
-
-        // 4. 本地缓存命中
         final cached = await AudioCache.get(s.globalId);
         if (cached != null) {
           try {
@@ -459,8 +446,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
             }
           } catch (_) {}
         }
-
-        // 5. 才走网络
         try {
           return await _resolveOne(s);
         } catch (_) {
@@ -477,7 +462,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     final source = ref.read(sourceByIdProvider)(s.source);
     final headers = isLocal ? null : source.audioHeaders;
 
-    // ★ 只给本地/已缓存的封面，避免断网时 just_audio_background 卡住
+    // 只给本地/已缓存的封面，避免断网时阻塞 setAudioSources
     Uri? artUri;
     if (s.coverPath.isNotEmpty) {
       if (!s.coverPath.startsWith('http')) {
@@ -530,7 +515,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   }
 
   Future<bool> _seekAndPlay(int idx, Song song) async {
-    _switching = true; // ★
+    _switching = true;
     try {
       HapticFeedback.mediumImpact();
       state = state.copyWith(
@@ -543,26 +528,30 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         lyric: const [],
         lyricIndex: -1,
       );
+
       try {
         await _engine.seekToIndex(idx);
-        state = state.copyWith(isLoading: false, isPlaying: true);
-        _loadLyricAsync(song);
-        _persist();
-        return true;
       } catch (e) {
         print('❌ [player] seek 失败: $e');
         state = state.copyWith(isLoading: false, isPlaying: false);
         _reportError(_failReason(song));
         return false;
       }
-    } finally {
+
+      state = state.copyWith(isLoading: false, isPlaying: true);
+      _loadLyricAsync(song);
+      _persist();
+
       _switching = false;
       unawaited(_engine.play());
+      return true;
+    } finally {
+      _switching = false;
     }
   }
 
   Future<bool> _hotInsertQueue(Song song) async {
-    _switching = true; // ★
+    _switching = true;
     try {
       print('🔥 [player] 走热插拔逻辑，目标: ${song.title}');
       final resolved = await _resolveOne(song);
@@ -593,13 +582,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         index: 0,
       );
 
-      if (ok) {
-        state = state.copyWith(isLoading: false, isPlaying: true);
-        _loadLyricAsync(resolved);
-        _persist();
-        print('✅ [player] 热插播成功');
-        return true;
-      } else {
+      if (!ok) {
         _queue = backup;
         state = state.copyWith(
           isLoading: false,
@@ -609,9 +592,15 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         print('❌ [player] 热插播失败，已回滚');
         return false;
       }
+
+      state = state.copyWith(isLoading: false, isPlaying: true);
+      _loadLyricAsync(resolved);
+      _persist();
+      print('✅ [player] 热插播成功');
+      // insertAndPlay 内部已 play，不再额外调
+      return true;
     } finally {
       _switching = false;
-      unawaited(_engine.play());
     }
   }
 
@@ -623,12 +612,11 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     final rawList = queue ?? [song];
     final list = _deduplicate(rawList, song);
 
-    // ★ 立即停掉旧歌，避免旧歌 stream 干扰
+    // ★ 点击新歌时，立即停掉当前播放
     if (_engine.hasSource) {
       await _engine.pause();
     }
 
-    // 判断1：同队列，直接 seek 到目标
     if (_engine.hasSource && _isSameQueue(list)) {
       final idx = _queue.indexWhere((s) => s.globalId == song.globalId);
       if (idx >= 0) {
@@ -637,7 +625,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       }
     }
 
-    // 判断2：插队
     if (_engine.hasSource &&
         list.isNotEmpty &&
         list.first.globalId == song.globalId) {
@@ -660,7 +647,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     Song target, {
     bool fromAutoPlay = false,
   }) async {
-    _switching = true; // ★
+    _switching = true;
     try {
       HapticFeedback.mediumImpact();
 
@@ -722,11 +709,13 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       _persist();
       _loadLyricAsync(target);
 
+      _switching = false;
+      unawaited(_engine.play());
+
       print('✅ [player] 全新队列播放已启动');
       return true;
     } finally {
       _switching = false;
-      unawaited(_engine.play());
     }
   }
 
@@ -734,7 +723,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     final song = state.current;
     if (song == null) return;
 
-    _switching = true; // ★
+    _switching = true;
     try {
       print('🔄 [player] 恢复播放，断点: ${state.position}');
       state = state.copyWith(isLoading: true, isPlaying: false);
@@ -759,7 +748,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       _queue = validSongs;
       state = state.copyWith(queue: List.unmodifiable(validSongs));
 
-      // position clamp 到 [0, duration]
       final maxMs = song.duration.inMilliseconds > 0
           ? song.duration.inMilliseconds
           : state.position.inMilliseconds;
@@ -790,9 +778,11 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         queue: List.unmodifiable(validSongs),
       );
       _loadLyricAsync(song);
-    } finally {
+
       _switching = false;
       unawaited(_engine.play());
+    } finally {
+      _switching = false;
     }
   }
 
@@ -909,24 +899,30 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   }
 
   Future<void> togglePlay() async {
-    // 切换中，忽略点击
+    // 切换中，忽略
     if (_switching) {
       print('⚠️ [player] togglePlay 忽略：切换中');
       return;
     }
-    if (!_engine.isReady) {
-      print('⚠️ [player] togglePlay 忽略：引擎未就绪');
+
+    // ★ 先判断"没 source 但有歌"→ 走恢复（重启后点播放走这条）
+    if (!_engine.hasSource && state.current != null) {
+      await _resumeFromRestore();
       return;
     }
+
+    // 引擎加载中，忽略
+    if (!_engine.isReady) {
+      print('⚠️ [player] togglePlay 忽略：引擎加载中');
+      return;
+    }
+
     if (_engine.isPlaying) {
       await _engine.pause();
       state = state.copyWith(isPlaying: false);
       return;
     }
-    if (!_engine.hasSource && state.current != null) {
-      await _resumeFromRestore();
-      return;
-    }
+
     unawaited(_engine.play());
     state = state.copyWith(isPlaying: true);
   }
