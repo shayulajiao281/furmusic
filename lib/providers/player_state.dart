@@ -263,6 +263,18 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     if (state.expanded) state = state.copyWith(expanded: false);
   }
 
+  /// ★ 核心修复：从持久化恢复时，本地缓存路径不可信，一律清空
+  ///   让后续 _resolveOne 重新走"缓存校验 → 网络 URL 请求"流程
+  Song _sanitizeRestoredSong(Song s) {
+    if (s.source == 'local') return s;
+    final path = s.audioPath;
+    if (path.isEmpty) return s;
+    if (path.startsWith('http')) return s;
+    // 非 http 路径（本地缓存路径），跨进程恢复不可信，清空
+    print('🧹 [restore] 清除跨进程恢复的本地路径: ${s.title} -> $path');
+    return s.copyWith(audioPath: '');
+  }
+
   PlayerState _restore() {
     try {
       final raw = _prefs.getString(_kPlayerStateKey);
@@ -272,13 +284,22 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       final songRaw = j['current'];
       if (songRaw == null) return PlayerState();
 
-      final song = Song.fromJson(Map<String, dynamic>.from(songRaw as Map));
+      // ★ sanitize 当前歌
+      final song = _sanitizeRestoredSong(
+        Song.fromJson(Map<String, dynamic>.from(songRaw as Map)),
+      );
       final posMs = j['position'] as int? ?? 0;
       final modeStr = j['mode'] as String? ?? 'repeatAll';
       final queueRaw = j['queue'] as List? ?? [];
+
+      // ★ sanitize 整个队列
       final queue = queueRaw
           .whereType<Map>()
-          .map((e) => Song.fromJson(Map<String, dynamic>.from(e)))
+          .map(
+            (e) => _sanitizeRestoredSong(
+              Song.fromJson(Map<String, dynamic>.from(e)),
+            ),
+          )
           .toList();
 
       final mode = PlayMode.values.firstWhere(
@@ -352,15 +373,26 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       return song;
     }
 
+    // ★ 缓存校验加强：路径含编码痕迹的缓存回退网络
     final cached = await AudioCache.get(song.globalId);
     if (cached != null) {
       try {
-        if (File(cached).lengthSync() > 1024) {
-          return song.copyWith(audioPath: cached);
+        final file = File(cached);
+        if (await file.exists() && await file.length() > 1024) {
+          // iOS 上路径含空格会被二次编码为 %2520，此处做简单探测
+          if (!cached.contains('%')) {
+            return song.copyWith(audioPath: cached);
+          } else {
+            print('⚠️ [resolve] 缓存路径含编码字符，回退网络: $cached');
+          }
         } else {
-          File(cached).deleteSync();
+          try {
+            await file.delete();
+          } catch (_) {}
         }
-      } catch (_) {}
+      } catch (e) {
+        print('⚠️ [resolve] 缓存校验异常: $e');
+      }
     }
 
     if (_resolvedUrls.containsKey(song.globalId)) {
@@ -484,7 +516,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       lyricIndex: -1,
     );
 
-    // 先更新本地队列，再让底层插入
     final backup = List<Song>.from(_queue);
     _queue.removeWhere((s) => s.globalId == resolved.globalId);
     _queue.insert(0, resolved);
@@ -581,7 +612,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       return false;
     }
 
-    // 必须先更新 _queue，再调 setPlaylist，否则 currentIndexStream 会读到错位
     _queue = validSongs;
     state = state.copyWith(queue: List.unmodifiable(validSongs));
 

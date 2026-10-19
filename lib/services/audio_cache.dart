@@ -6,18 +6,24 @@ import 'package:path_provider/path_provider.dart';
 class AudioCache {
   static Directory? _cacheDir;
 
-  static final Set<String> _downloading = {};
-  static final Map<String, Future<void>> _downloadFutures = {};
+  /// 索引 key 统一为「songId 转下划线、不含扩展名」的基础名
   static final Map<String, int> _completeIndex = {};
   static final Map<String, String> _pathIndex = {};
 
-  /// ★ 进度：songId -> 0.0~1.0
+  static final Set<String> _downloading = {};
+  static final Map<String, Future<void>> _downloadFutures = {};
+
   static final Map<String, double> _progressMap = {};
   static final StreamController<String> _progressUpdates =
       StreamController<String>.broadcast();
   static final Set<String> _pendingNotify = {};
 
-  static String _safeName(String songId) {
+  // ═══════════════════════════════════════════
+  // 工具
+  // ═══════════════════════════════════════════
+
+  /// 索引 key：songId → 安全基础名（不含扩展名）
+  static String _keyOf(String songId) {
     return songId
         .replaceAll(':', '_')
         .replaceAll('/', '_')
@@ -26,21 +32,82 @@ class AudioCache {
         .replaceAll('*', '_');
   }
 
+  /// 判断文件名是否带扩展名
+  static bool _hasExt(String path) {
+    final name = path.split(Platform.pathSeparator).last;
+    final dot = name.lastIndexOf('.');
+    return dot > 0 && dot < name.length - 1;
+  }
+
+  /// 从完整路径提取索引 key（去扩展名）
+  static String _keyFromPath(String path) {
+    final name = path.split(Platform.pathSeparator).last;
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(0, dot) : name;
+  }
+
+  /// 根据 content-type / URL 推断扩展名（iOS 兼容优先 m4a）
+  static String _extFrom(String? contentType, String url) {
+    final ct = (contentType ?? '').toLowerCase();
+    if (ct.contains('mpeg') || ct.contains('mp3')) return '.mp3';
+    if (ct.contains('mp4') || ct.contains('m4a') || ct.contains('aac')) {
+      return '.m4a';
+    }
+    if (ct.contains('flac')) return '.flac';
+    if (ct.contains('ogg')) return '.ogg';
+    if (ct.contains('wav')) return '.wav';
+
+    final lower = url.toLowerCase();
+    if (lower.contains('.mp3')) return '.mp3';
+    if (lower.contains('.m4a')) return '.m4a';
+    if (lower.contains('.flac')) return '.flac';
+    if (lower.contains('.ogg')) return '.ogg';
+    if (lower.contains('.wav')) return '.wav';
+    if (lower.contains('.aac')) return '.aac';
+
+    // 默认 m4a：iOS 最兼容，Android 也认
+    return '.m4a';
+  }
+
+  // ═══════════════════════════════════════════
+  // 目录
+  // ═══════════════════════════════════════════
+
   static Future<Directory> _dir() async {
     if (_cacheDir != null) return _cacheDir!;
-    final support = await getApplicationSupportDirectory();
-    final dir = Directory('${support.path}/audio_cache');
+    // ★ 用 Documents，路径无空格（"Application Support" 有空格会触发 iOS 编码问题）
+    final docs = await getApplicationDocumentsDirectory();
+    final dir = Directory('${docs.path}/audio_cache');
     if (!dir.existsSync()) dir.createSync(recursive: true);
     _cacheDir = dir;
     return dir;
   }
 
+  /// 清理旧版 Application Support 缓存目录（升级后一次性迁移）
+  static Future<void> _cleanupLegacyDir() async {
+    try {
+      final support = await getApplicationSupportDirectory();
+      final legacy = Directory('${support.path}/audio_cache');
+      if (legacy.existsSync()) {
+        legacy.deleteSync(recursive: true);
+        print('🧹 [cache] 已清理旧版缓存目录（含无扩展名文件）');
+      }
+    } catch (_) {}
+  }
+
+  // ═══════════════════════════════════════════
+  // 初始化
+  // ═══════════════════════════════════════════
+
   static Future<void> init() async {
+    // 先清理旧目录（一次性）
+    await _cleanupLegacyDir();
+
     final dir = await _dir();
     _completeIndex.clear();
     _pathIndex.clear();
 
-    int count = 0;
+    final allFiles = <File>[];
     await for (final e in dir.list()) {
       if (e is! File) continue;
       if (e.path.endsWith('.part')) {
@@ -49,26 +116,62 @@ class AudioCache {
         } catch (_) {}
         continue;
       }
+      allFiles.add(e);
+    }
 
+    // 有扩展名的优先处理（同一 key 冲突时保留带扩展名的）
+    allFiles.sort((a, b) {
+      final aHas = _hasExt(a.path);
+      final bHas = _hasExt(b.path);
+      if (aHas && !bHas) return -1;
+      if (!aHas && bHas) return 1;
+      return 0;
+    });
+
+    int count = 0;
+    int removed = 0;
+
+    for (final f in allFiles) {
       try {
-        final len = e.statSync().size;
+        final len = f.statSync().size;
         if (len < 1024) {
-          e.deleteSync();
+          f.deleteSync();
+          removed++;
           continue;
         }
-        if (!_isAudioHead(e)) {
-          print('⚠️ [cache] 删除坏文件: ${e.path}');
-          e.deleteSync();
+        if (!_isAudioHead(f)) {
+          print('⚠️ [cache] 删除坏文件: ${f.path}');
+          f.deleteSync();
+          removed++;
           continue;
         }
-        final name = e.path.split(Platform.pathSeparator).last;
-        _completeIndex[name] = len;
-        _pathIndex[name] = e.path;
+
+        final key = _keyFromPath(f.path);
+
+        // 同 key 已存在 → 当前文件冗余，删除
+        if (_pathIndex.containsKey(key)) {
+          try {
+            f.deleteSync();
+            removed++;
+          } catch (_) {}
+          continue;
+        }
+
+        _completeIndex[key] = len;
+        _pathIndex[key] = f.path;
         count++;
       } catch (_) {}
     }
-    print('📦 [cache] 已索引 $count 个有效缓存');
+
+    print(
+      '📦 [cache] 已索引 $count 个有效缓存'
+      '${removed > 0 ? "（清理 $removed 个冗余/损坏）" : ""}',
+    );
   }
+
+  // ═══════════════════════════════════════════
+  // 文件头校验
+  // ═══════════════════════════════════════════
 
   static bool _isAudioHead(File f) {
     try {
@@ -95,9 +198,13 @@ class AudioCache {
         final b2 = bytes[2];
         final b3 = bytes[3];
 
+        // fLaC
         if (b0 == 0x66 && b1 == 0x4C && b2 == 0x61 && b3 == 0x43) return true;
+        // OggS
         if (b0 == 0x4F && b1 == 0x67 && b2 == 0x67 && b3 == 0x53) return true;
+        // RIFF（wav）
         if (b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46) return true;
+        // m4a/mp4：bytes[4..7] == 'ftyp'
         if (bytes.length >= 8) {
           if (bytes[4] == 0x66 &&
               bytes[5] == 0x74 &&
@@ -106,7 +213,9 @@ class AudioCache {
             return true;
           }
         }
+        // ID3
         if (b0 == 0x49 && b1 == 0x44 && b2 == 0x33) return true;
+        // MP3 frame sync
         if (b0 == 0xFF && (b1 & 0xE0) == 0xE0) return true;
       }
       return true;
@@ -115,46 +224,62 @@ class AudioCache {
     }
   }
 
-  static Future<String?> get(String songId) async {
-    final safe = _safeName(songId);
+  // ═══════════════════════════════════════════
+  // 查询
+  // ═══════════════════════════════════════════
 
-    final path = _pathIndex[safe];
+  /// 取缓存文件路径；无缓存返回 null
+  static Future<String?> get(String songId) async {
+    final key = _keyOf(songId);
+
+    // 1. 内存索引命中
+    final path = _pathIndex[key];
     if (path != null) {
       final f = File(path);
       if (f.existsSync() && f.lengthSync() > 1024) {
         return path;
       }
-      _pathIndex.remove(safe);
-      _completeIndex.remove(safe);
+      _pathIndex.remove(key);
+      _completeIndex.remove(key);
     }
 
+    // 2. 目录兜底扫描（兼容 init 未跑或索引丢失）
     final dir = await _dir();
-    final file = File('${dir.path}/$safe');
-    if (!file.existsSync()) return null;
-
-    final len = file.lengthSync();
-    if (len < 1024) {
-      try {
-        file.deleteSync();
-      } catch (_) {}
-      return null;
+    final candidates = <File>[];
+    await for (final e in dir.list()) {
+      if (e is! File) continue;
+      final name = e.path.split(Platform.pathSeparator).last;
+      if (name == key || name.startsWith('$key.')) {
+        candidates.add(e);
+      }
     }
 
-    if (!_isAudioHead(file)) {
-      print('⚠️ [cache] 文件头非音频，删除: $safe');
+    for (final f in candidates) {
       try {
-        file.deleteSync();
+        final len = f.lengthSync();
+        if (len < 1024) {
+          try {
+            f.deleteSync();
+          } catch (_) {}
+          continue;
+        }
+        if (!_isAudioHead(f)) {
+          try {
+            f.deleteSync();
+          } catch (_) {}
+          continue;
+        }
+        _completeIndex[key] = len;
+        _pathIndex[key] = f.path;
+        return f.path;
       } catch (_) {}
-      return null;
     }
 
-    _completeIndex[safe] = len;
-    _pathIndex[safe] = file.path;
-    return file.path;
+    return null;
   }
 
   static bool isComplete(String songId) {
-    return _pathIndex.containsKey(_safeName(songId));
+    return _pathIndex.containsKey(_keyOf(songId));
   }
 
   static bool isDownloading(String songId) {
@@ -162,16 +287,14 @@ class AudioCache {
   }
 
   // ═══════════════════════════════════════════
-  // ★ 进度查询 / 订阅
+  // 进度
   // ═══════════════════════════════════════════
 
-  /// 当前缓存进度：0.0~1.0
   static double progressOf(String songId) {
     if (isComplete(songId)) return 1.0;
     return (_progressMap[songId] ?? 0.0).clamp(0.0, 1.0);
   }
 
-  /// 订阅某首歌的缓存进度。已完整缓存时立即 yield 1.0 并结束。
   static Stream<double> watchProgress(String songId) async* {
     final initial = progressOf(songId);
     yield initial;
@@ -185,7 +308,6 @@ class AudioCache {
     }
   }
 
-  /// 节流推送：200ms 最多一次
   static void _reportProgress(String songId, double p) {
     _progressMap[songId] = p.clamp(0.0, 1.0);
     if (!_pendingNotify.add(songId)) return;
@@ -230,7 +352,6 @@ class AudioCache {
     if (existing != null) return existing;
 
     final dl = download(songId, url, headers: headers);
-
     try {
       await Future.any([dl, Future.delayed(timeout)]);
     } catch (_) {}
@@ -252,7 +373,6 @@ class AudioCache {
         await Future.delayed(Duration(seconds: attempt * 2));
       }
     }
-    // 全部失败：清进度 + 通知 UI 归零
     _progressMap.remove(songId);
     _notifyNow(songId);
   }
@@ -264,10 +384,9 @@ class AudioCache {
   }) async {
     _downloading.add(songId);
 
-    final safe = _safeName(songId);
+    final key = _keyOf(songId);
     final dir = await _dir();
-    final tmpFile = File('${dir.path}/$safe.part');
-    final finalFile = File('${dir.path}/$safe');
+    final tmpFile = File('${dir.path}/$key.part');
 
     try {
       if (tmpFile.existsSync()) tmpFile.deleteSync();
@@ -286,6 +405,10 @@ class AudioCache {
         print('❌ [cache] HTTP ${response.statusCode}: $songId');
         return false;
       }
+
+      // ★ 决定扩展名
+      final ext = _extFrom(response.headers['content-type'], url);
+      final finalFile = File('${dir.path}/$key$ext');
 
       final total = response.contentLength ?? 0;
       int received = 0;
@@ -322,15 +445,29 @@ class AudioCache {
         return false;
       }
 
-      if (finalFile.existsSync()) finalFile.deleteSync();
+      // 删除同 key 的旧文件（比如上次用不同扩展名存的）
+      await for (final e in dir.list()) {
+        if (e is! File) continue;
+        if (e.path == finalFile.path) continue;
+        final name = e.path.split(Platform.pathSeparator).last;
+        if (name == key || name.startsWith('$key.')) {
+          try {
+            e.deleteSync();
+          } catch (_) {}
+        }
+      }
+
       await tmpFile.rename(finalFile.path);
 
-      _completeIndex[safe] = len;
-      _pathIndex[safe] = finalFile.path;
+      _completeIndex[key] = len;
+      _pathIndex[key] = finalFile.path;
       _progressMap[songId] = 1.0;
       _notifyNow(songId);
 
-      print('📥 [cache] 已缓存: $songId (${len ~/ 1024} KB)');
+      print(
+        '📥 [cache] 已缓存: $songId → '
+        '${finalFile.path.split(Platform.pathSeparator).last} (${len ~/ 1024} KB)',
+      );
       return true;
     } catch (e) {
       print('❌ [cache] 下载异常: $e');
@@ -343,6 +480,10 @@ class AudioCache {
       _downloading.remove(songId);
     }
   }
+
+  // ═══════════════════════════════════════════
+  // 清理
+  // ═══════════════════════════════════════════
 
   static Future<void> clear() async {
     final dir = await _dir();
@@ -389,10 +530,10 @@ class AudioCache {
       final f = files[idx];
       total -= f.statSync().size;
       try {
+        final key = _keyFromPath(f.path);
         f.deleteSync();
-        final name = f.path.split(Platform.pathSeparator).last;
-        _completeIndex.remove(name);
-        _pathIndex.remove(name);
+        _completeIndex.remove(key);
+        _pathIndex.remove(key);
       } catch (_) {}
       idx++;
     }

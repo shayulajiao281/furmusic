@@ -32,7 +32,7 @@ class AudioEngine {
 
   Stream<PlayerState> get playerStateStream => _player.playerStateStream;
 
-  /// ★ 关键修改：配置并激活音频会话
+  /// 初始化：配置并激活音频会话
   Future<void> init() async {
     try {
       await _player.setLoopMode(LoopMode.off);
@@ -46,6 +46,7 @@ class AudioEngine {
     }
   }
 
+  /// ★ 迁移：使用 player.setAudioSources 替代 ConcatenatingAudioSource
   Future<void> setPlaylist({
     required List<AudioSource> sources,
     required int initialIndex,
@@ -55,12 +56,11 @@ class AudioEngine {
       if (sources.isEmpty) return;
 
       _isReady = false;
-      final concat = ConcatenatingAudioSource(children: sources);
 
       try {
         await _player
-            .setAudioSource(
-              concat,
+            .setAudioSources(
+              sources,
               initialIndex: initialIndex.clamp(0, sources.length - 1),
               initialPosition: initialPosition,
             )
@@ -68,7 +68,7 @@ class AudioEngine {
         _hasSource = true;
         _isReady = true;
       } catch (e) {
-        print('❌ [engine] setPlaylist 失败: $e');
+        print('❌ [engine] setAudioSources 失败: $e');
         _hasSource = false;
         _isReady = false;
         rethrow;
@@ -76,12 +76,11 @@ class AudioEngine {
     });
   }
 
+  /// 按索引 seek（不变）
   Future<void> seekToIndex(int index) {
     return _enqueue(() async {
       if (!_hasSource) return;
-      final source = _player.audioSource;
-      if (source is! ConcatenatingAudioSource) return;
-      if (index < 0 || index >= source.children.length) return;
+      if (index < 0 || index >= _player.effectiveIndices.length) return;
       try {
         await _player
             .seek(Duration.zero, index: index)
@@ -92,20 +91,20 @@ class AudioEngine {
     });
   }
 
+  /// ★ 迁移：使用 player.removeAudioSourceAt 替代 source.removeAt
   Future<void> removeAt(int index) {
     return _enqueue(() async {
       if (!_hasSource) return;
-      final source = _player.audioSource;
-      if (source is! ConcatenatingAudioSource) return;
-      if (index < 0 || index >= source.children.length) return;
+      if (index < 0 || index >= _player.effectiveIndices.length) return;
       try {
-        await source.removeAt(index);
+        await _player.removeAudioSourceAt(index);
       } catch (e) {
-        print('❌ [engine] removeAt 失败: $e');
+        print('❌ [engine] removeAudioSourceAt 失败: $e');
       }
     });
   }
 
+  /// 重置引擎（不变）
   Future<void> reset() {
     return _enqueue(() async {
       try {
@@ -118,16 +117,15 @@ class AudioEngine {
     });
   }
 
+  /// ★ 迁移：使用 player.insertAudioSource 替代 concat.insert
   Future<bool> insertAndPlay({
     required AudioSource source,
     required int index,
   }) {
     return _enqueue(() async {
       if (!_hasSource) return false;
-      final concat = _player.audioSource;
-      if (concat is! ConcatenatingAudioSource) return false;
       try {
-        await concat.insert(index, source);
+        await _player.insertAudioSource(index, source);
         await _player
             .seek(Duration.zero, index: index)
             .timeout(const Duration(seconds: 10));
@@ -140,7 +138,7 @@ class AudioEngine {
     });
   }
 
-  /// ★ 关键修改：play() 前再次确保会话是活跃的
+  /// play 前再次激活音频会话（不变）
   Future<void> play() async {
     if (!_isReady) {
       print('⚠️ [engine] play() 被忽略：未就绪');
@@ -194,13 +192,15 @@ class AudioEngine {
           await _player.seekToPrevious();
           return;
         }
+        // shuffle 下 hasPrevious=false 表示打乱顺序里已是第一首，
+        // 跳物理末尾会破坏打乱顺序，直接回到开头
         if (_player.shuffleModeEnabled) {
           await _player.seek(Duration.zero, index: 0);
           return;
         }
-        final source = _player.audioSource;
-        if (source is ConcatenatingAudioSource && source.children.isNotEmpty) {
-          await _player.seek(Duration.zero, index: source.children.length - 1);
+        final len = _player.effectiveIndices.length;
+        if (len > 0) {
+          await _player.seek(Duration.zero, index: len - 1);
         } else {
           await _player.seek(Duration.zero, index: 0);
         }
