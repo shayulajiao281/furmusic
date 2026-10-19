@@ -22,7 +22,7 @@ class PlaylistSheet extends ConsumerWidget {
     final notifier = ref.read(playerStateProvider.notifier);
     final favorites = ref.watch(favoriteSongsProvider);
     final queue = player.queue;
-    final currentId = player.current?.id;
+    final currentId = player.current?.globalId;
 
     final bottomInset = MediaQuery.of(context).padding.bottom;
 
@@ -47,6 +47,7 @@ class PlaylistSheet extends ConsumerWidget {
               borderRadius: BorderRadius.circular(4),
             ),
           ),
+
           // 标题
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
@@ -80,6 +81,22 @@ class PlaylistSheet extends ConsumerWidget {
               ],
             ),
           ),
+
+          // 提示
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '左滑删除 · 长按也可删除',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: AppColors.muted.withValues(alpha: 0.8),
+                ),
+              ),
+            ),
+          ),
+
           // 列表
           Flexible(
             child: queue.isEmpty
@@ -97,17 +114,70 @@ class PlaylistSheet extends ConsumerWidget {
                     itemCount: queue.length,
                     itemBuilder: (_, i) {
                       final s = queue[i];
-                      final isFav = favorites.any((f) => f.id == s.id);
+                      final isFav = favorites.any(
+                        (f) => f.globalId == s.globalId,
+                      );
                       final displaySong = s.copyWith(isFavorite: isFav);
-                      final active = s.id == currentId;
+                      final active = s.globalId == currentId;
 
-                      return SongTile(
-                        song: displaySong,
-                        active: active,
-                        onTap: () {
-                          // 播放队列里的第 i 首
-                          notifier.playFromQueue(i);
+                      return Dismissible(
+                        key: ValueKey('pl_${s.globalId}'),
+                        direction: DismissDirection.endToStart,
+                        background: Container(
+                          margin: const EdgeInsets.only(bottom: 9),
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          alignment: Alignment.centerRight,
+                          decoration: BoxDecoration(
+                            color: AppColors.red,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: const Icon(
+                            CupertinoIcons.delete,
+                            color: CupertinoColors.white,
+                            size: 22,
+                          ),
+                        ),
+                        onDismissed: (_) {
+                          notifier.removeFromQueue(s);
                         },
+                        child: GestureDetector(
+                          // 长按也可删除
+                          onLongPress: () async {
+                            final ok = await showCupertinoDialog<bool>(
+                              context: context,
+                              builder: (_) => CupertinoAlertDialog(
+                                title: const Text('移出播放列表'),
+                                content: Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: Text('确定要把《${s.title}》从播放列表移除吗？'),
+                                ),
+                                actions: [
+                                  CupertinoDialogAction(
+                                    onPressed: () =>
+                                        Navigator.pop(context, false),
+                                    child: const Text('取消'),
+                                  ),
+                                  CupertinoDialogAction(
+                                    isDestructiveAction: true,
+                                    onPressed: () =>
+                                        Navigator.pop(context, true),
+                                    child: const Text('移除'),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (ok == true) {
+                              notifier.removeFromQueue(s);
+                            }
+                          },
+                          child: SongTile(
+                            song: displaySong,
+                            active: active,
+                            onTap: () {
+                              notifier.playFromQueue(i);
+                            },
+                          ),
+                        ),
                       );
                     },
                   ),

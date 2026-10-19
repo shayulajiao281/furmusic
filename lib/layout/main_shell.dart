@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../providers/player_state.dart';
 import '../theme/app_colors.dart';
-import '../widgets/app_toast.dart';
 import '../widgets/mini_player.dart';
 
 class MainShell extends ConsumerWidget {
@@ -23,15 +22,6 @@ class MainShell extends ConsumerWidget {
       playerStateProvider.select((s) => s.current != null),
     );
     final contentBottomPadding = tabbarHeight + (hasSong ? _miniHeight : 0);
-
-    // ★ 监听播放错误 → 顶部 Toast
-    ref.listen<int>(playerStateProvider.select((s) => s.errorId), (prev, next) {
-      if (prev == next) return;
-      final msg = ref.read(playerStateProvider).lastError;
-      if (msg != null && msg.isNotEmpty) {
-        showAppToast(context, msg);
-      }
-    });
 
     return MediaQuery.removeViewInsets(
       context: context,
@@ -56,7 +46,10 @@ class MainShell extends ConsumerWidget {
               bottom: 0,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                children: [const MiniPlayer(), _buildTabbar(ref, bottom)],
+                children: [
+                  const MiniPlayer(),
+                  _buildTabbar(ref, bottom),
+                ],
               ),
             ),
           ],
@@ -71,24 +64,14 @@ class MainShell extends ConsumerWidget {
       padding: EdgeInsets.only(bottom: bottom),
       decoration: const BoxDecoration(
         color: Color(0x00000000),
-        border: Border(top: BorderSide(color: Color(0x0F141928), width: 1)),
+        border: Border(
+          top: BorderSide(color: Color(0x0F141928), width: 1),
+        ),
       ),
       child: Row(
         children: [
-          _tab(
-            ref,
-            0,
-            CupertinoIcons.music_note,
-            CupertinoIcons.music_note,
-            '音乐',
-          ),
-          _tab(
-            ref,
-            1,
-            CupertinoIcons.compass,
-            CupertinoIcons.compass_fill,
-            '发现',
-          ),
+          _tab(ref, 0, CupertinoIcons.music_note, CupertinoIcons.music_note, '音乐'),
+          _tab(ref, 1, CupertinoIcons.compass, CupertinoIcons.compass_fill, '发现'),
           _tab(ref, 2, CupertinoIcons.person, CupertinoIcons.person_fill, '我的'),
         ],
       ),

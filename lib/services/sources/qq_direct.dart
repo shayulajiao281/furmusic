@@ -15,9 +15,6 @@ class QQDirect implements MusicSource {
   @override
   int get weight => 7;
 
-  // ═══════════════════════════════════════════
-  // 请求头（伪装成官方客户端）
-  // ═══════════════════════════════════════════
   Map<String, String> get _headers {
     final cookie = AuthStore.cookieFor('qq');
     return {
@@ -39,9 +36,6 @@ class QQDirect implements MusicSource {
   @override
   Map<String, String> get audioHeaders => _headers;
 
-  // ═══════════════════════════════════════════
-  // 搜索：登录 → 新接口；未登录 → 旧接口
-  // ═══════════════════════════════════════════
   @override
   Future<SearchResult> search(
     String keyword, {
@@ -52,7 +46,6 @@ class QQDirect implements MusicSource {
     final hasLogin = cookie != null && cookie.isNotEmpty;
 
     if (hasLogin) {
-      print('🔐 [qq] 已登录，走新接口 musicu.fcg');
       final r = await _searchNewApi(keyword, page, pageSize);
       if (r.songs.isNotEmpty) return r;
       print('⚠️ [qq] 新接口空结果，尝试旧接口');
@@ -63,71 +56,51 @@ class QQDirect implements MusicSource {
     return _searchOldApi(keyword, page, pageSize);
   }
 
-  // ─── 新接口（需要登录）───
   Future<SearchResult> _searchNewApi(
     String keyword,
     int page,
     int pageSize,
   ) async {
-    const maxAttempts = 3;
-    for (int attempt = 0; attempt < maxAttempts; attempt++) {
-      final sw = Stopwatch()..start();
-      try {
-        final body = jsonEncode({
-          'comm': {'ct': 24, 'cv': 0},
-          'req_1': {
-            'method': 'DoSearchForQQMusicDesktop',
-            'module': 'music.search.SearchCgiService',
-            'param': {
-              'num_per_page': pageSize,
-              'page_num': page,
-              'query': keyword,
-              'search_type': 0,
-            },
+    try {
+      final body = jsonEncode({
+        'comm': {'ct': 24, 'cv': 0},
+        'req_1': {
+          'method': 'DoSearchForQQMusicDesktop',
+          'module': 'music.search.SearchCgiService',
+          'param': {
+            'num_per_page': pageSize,
+            'page_num': page,
+            'query': keyword,
+            'search_type': 0,
           },
-        });
+        },
+      });
 
-        final res = await client
-            .post(
-              Uri.parse('https://u.y.qq.com/cgi-bin/musicu.fcg'),
-              headers: {..._headers, 'Content-Type': 'application/json'},
-              body: body,
-            )
-            .timeout(const Duration(seconds: 15));
-        sw.stop();
+      final res = await client
+          .post(
+            Uri.parse('https://u.y.qq.com/cgi-bin/musicu.fcg'),
+            headers: {..._headers, 'Content-Type': 'application/json'},
+            body: body,
+          )
+          .timeout(const Duration(seconds: 8));
 
-        if (res.statusCode != 200) {
-          print('❌ [qq-new] HTTP ${res.statusCode} (attempt ${attempt + 1})');
-          if (res.statusCode >= 500) {
-            await Future.delayed(Duration(seconds: attempt + 1));
-            continue;
-          }
-          return const SearchResult(songs: [], hasMore: false);
-        }
-
-        final json = jsonDecode(utf8.decode(res.bodyBytes));
-        final result = _parseNewApi(json, page, pageSize);
-        print(
-          '✅ [qq-new] "$keyword" p$page → ${result.songs.length} 条 (${sw.elapsedMilliseconds}ms)',
-        );
-        return result;
-      } catch (e) {
-        sw.stop();
-        print('❌ [qq-new] 异常: $e (attempt ${attempt + 1})');
-        if (attempt < maxAttempts - 1) {
-          await Future.delayed(Duration(seconds: attempt + 1));
-        }
+      if (res.statusCode != 200) {
+        return const SearchResult(songs: [], hasMore: false);
       }
+
+      final json = jsonDecode(utf8.decode(res.bodyBytes));
+      return _parseNewApi(json, page, pageSize);
+    } catch (e) {
+      print('❌ [qq-new] 异常: $e');
+      return const SearchResult(songs: [], hasMore: false);
     }
-    return const SearchResult(songs: [], hasMore: false);
   }
 
   SearchResult _parseNewApi(Map<String, dynamic> json, int page, int pageSize) {
     try {
       final body = json['req_1']?['data']?['body'];
       final songData = body?['song'];
-      if (songData == null)
-        return const SearchResult(songs: [], hasMore: false);
+      if (songData == null) return const SearchResult(songs: [], hasMore: false);
 
       final total = (songData['totalnum'] as int?) ?? 0;
       final rawList = songData['list'] as List? ?? [];
@@ -136,12 +109,10 @@ class QQDirect implements MusicSource {
       final offset = (page - 1) * pageSize;
       return SearchResult(songs: songs, hasMore: offset + songs.length < total);
     } catch (e) {
-      print('❌ [qq-new] 解析出错: $e');
       return const SearchResult(songs: [], hasMore: false);
     }
   }
 
-  // ─── 旧接口（无需登录）───
   Future<SearchResult> _searchOldApi(
     String keyword,
     int page,
@@ -157,56 +128,34 @@ class QQDirect implements MusicSource {
           },
         );
 
-    const maxAttempts = 3;
-    for (int attempt = 0; attempt < maxAttempts; attempt++) {
-      final sw = Stopwatch()..start();
-      try {
-        final res = await client
-            .get(uri, headers: _headers)
-            .timeout(const Duration(seconds: 15));
-        sw.stop();
+    try {
+      final res = await client
+          .get(uri, headers: _headers)
+          .timeout(const Duration(seconds: 8));
 
-        if (res.statusCode != 200) {
-          print(
-            '❌ [qq-old] HTTP ${res.statusCode} (attempt ${attempt + 1}/$maxAttempts)',
-          );
-          if (res.statusCode >= 500) {
-            await Future.delayed(Duration(seconds: attempt + 1));
-            continue;
-          }
-          return const SearchResult(songs: [], hasMore: false);
-        }
-
-        final text = utf8.decode(res.bodyBytes);
-        final start = text.indexOf('{');
-        final end = text.lastIndexOf('}');
-        if (start < 0 || end < 0) {
-          return const SearchResult(songs: [], hasMore: false);
-        }
-
-        final json = jsonDecode(text.substring(start, end + 1));
-        final result = _parseOldApi(json, page, pageSize);
-        print(
-          '✅ [qq-old] "$keyword" p$page → ${result.songs.length} 条 (${sw.elapsedMilliseconds}ms)',
-        );
-        return result;
-      } catch (e) {
-        sw.stop();
-        print('❌ [qq-old] 异常: $e (attempt ${attempt + 1}/$maxAttempts)');
-        if (attempt < maxAttempts - 1) {
-          await Future.delayed(Duration(seconds: attempt + 1));
-        }
+      if (res.statusCode != 200) {
+        return const SearchResult(songs: [], hasMore: false);
       }
+
+      final text = utf8.decode(res.bodyBytes);
+      final start = text.indexOf('{');
+      final end = text.lastIndexOf('}');
+      if (start < 0 || end < 0) {
+        return const SearchResult(songs: [], hasMore: false);
+      }
+
+      final json = jsonDecode(text.substring(start, end + 1));
+      return _parseOldApi(json, page, pageSize);
+    } catch (e) {
+      print('❌ [qq-old] 异常: $e');
+      return const SearchResult(songs: [], hasMore: false);
     }
-    print('❌ [qq] 两个接口都没成功');
-    return const SearchResult(songs: [], hasMore: false);
   }
 
   SearchResult _parseOldApi(Map<String, dynamic> json, int page, int pageSize) {
     try {
       final songData = json['data']?['song'];
-      if (songData == null)
-        return const SearchResult(songs: [], hasMore: false);
+      if (songData == null) return const SearchResult(songs: [], hasMore: false);
 
       final total = (songData['totalnum'] as int?) ?? 0;
       final rawList = songData['list'] as List? ?? [];
@@ -215,12 +164,10 @@ class QQDirect implements MusicSource {
       final offset = (page - 1) * pageSize;
       return SearchResult(songs: songs, hasMore: offset + songs.length < total);
     } catch (e) {
-      print('❌ [qq-old] 解析出错: $e');
       return const SearchResult(songs: [], hasMore: false);
     }
   }
 
-  // ─── 通用：把一条原始数据映射成 Song ───
   Song? _mapSong(dynamic item) {
     if (item is! Map) return null;
     final m = Map<String, dynamic>.from(item);
@@ -251,9 +198,6 @@ class QQDirect implements MusicSource {
     );
   }
 
-  // ═══════════════════════════════════════════
-  // 播放直链
-  // ═══════════════════════════════════════════
   @override
   Future<String?> getSongUrl(String songId) async {
     try {
@@ -287,31 +231,20 @@ class QQDirect implements MusicSource {
           )
           .timeout(const Duration(seconds: 10));
 
-      if (res.statusCode != 200) {
-        print('❌ [qq] url HTTP ${res.statusCode}');
-        return null;
-      }
+      if (res.statusCode != 200) return null;
 
       final json = jsonDecode(utf8.decode(res.bodyBytes));
       final data = json['req_0']?['data'];
       final purl = data?['midurlinfo']?[0]?['purl'] as String?;
-      final errCode = json['req_0']?['code'];
 
-      if (purl == null || purl.isEmpty) {
-        print('❌ [qq] purl 空 (code=$errCode)');
-        return null;
-      }
+      if (purl == null || purl.isEmpty) return null;
 
       return 'https://ws.stream.qqmusic.qq.com/$purl';
     } catch (e) {
-      print('❌ [qq] url 异常: $e');
       return null;
     }
   }
 
-  // ═══════════════════════════════════════════
-  // 歌词
-  // ═══════════════════════════════════════════
   @override
   Future<List<MapEntry<double, String>>> getLyric(String songId) async {
     try {
@@ -339,7 +272,6 @@ class QQDirect implements MusicSource {
       final lrc = json['lyric'] as String? ?? '';
       return _parseLrc(lrc);
     } catch (e) {
-      print('❌ [qq] lyric 异常: $e');
       return [];
     }
   }

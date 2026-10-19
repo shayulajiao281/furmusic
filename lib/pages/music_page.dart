@@ -8,6 +8,8 @@ import '../providers/app_state.dart';
 import '../providers/player_state.dart';
 import '../providers/music_sources.dart';
 import '../theme/app_colors.dart';
+import '../utils/play_or_open.dart';
+import '../widgets/song_cover.dart';
 import '../widgets/song_tile.dart';
 
 class RecommendCategory {
@@ -20,74 +22,35 @@ class RecommendCategory {
 
 const _categories = [
   RecommendCategory('hot', '热门推荐', '🔥', [
-    '热门华语歌曲',
-    '抖音热歌',
-    '2026 热门歌曲',
-    '华语热歌',
-    '网络热歌',
-    '流行金曲',
-    '热歌榜',
+    '热门华语歌曲', '抖音热歌', '2026 热门歌曲', '华语热歌',
+    '网络热歌', '流行金曲', '热歌榜',
   ]),
   RecommendCategory('chinese', '华语流行', '🎤', [
-    '华语经典',
-    '周杰伦',
-    '林俊杰',
-    '陈奕迅',
-    '薛之谦',
-    '邓紫棋',
-    '李荣浩',
-    '毛不易',
-    '许嵩',
-    '五月天',
-    '华语情歌',
+    '华语经典', '周杰伦', '林俊杰', '陈奕迅', '薛之谦',
+    '邓紫棋', '李荣浩', '毛不易', '许嵩', '五月天', '华语情歌',
   ]),
   RecommendCategory('cantonese', '粤语经典', '🎵', [
-    '粤语经典',
-    'Beyond',
-    '张国荣',
-    '张学友 粤语',
-    '陈奕迅 粤语',
-    '刘德华',
-    '梅艳芳',
-    '谭咏麟',
-    '粤语金曲',
+    '粤语经典', 'Beyond', '张国荣', '张学友 粤语', '陈奕迅 粤语',
+    '刘德华', '梅艳芳', '谭咏麟', '粤语金曲',
   ]),
   RecommendCategory('english', '英文歌曲', '🌍', [
-    '英文流行',
-    'Taylor Swift',
-    'Ed Sheeran',
-    'Adele',
-    'Bruno Mars',
-    '英文经典',
-    '欧美热歌',
+    '英文流行', 'Taylor Swift', 'Ed Sheeran', 'Adele',
+    'Bruno Mars', '英文经典', '欧美热歌',
   ]),
   RecommendCategory('pure', '纯音乐', '🎹', [
-    '钢琴曲',
-    '轻音乐 助眠',
-    '纯音乐 治愈',
-    '古风纯音乐',
-    '吉他指弹',
-    '治愈系 纯音乐',
-    '八音盒',
+    '钢琴曲', '轻音乐 助眠', '纯音乐 治愈', '古风纯音乐',
+    '吉他指弹', '治愈系 纯音乐', '八音盒',
   ]),
   RecommendCategory('folk', '民谣', '🎸', [
-    '民谣',
-    '赵雷',
-    '房东的猫',
-    '陈粒',
-    '宋冬野',
-    '朴树',
-    '民谣 治愈',
-    '独立民谣',
+    '民谣', '赵雷', '房东的猫', '陈粒', '宋冬野',
+    '朴树', '民谣 治愈', '独立民谣',
   ]),
 ];
 
 const int _perCategory = 6;
-
-/// ★ 缓存 key 和过期时间
 const _kCacheKey = 'furkid_recommend_cache_v1';
 const _kCacheTimeKey = 'furkid_recommend_cache_time';
-const _cacheValidMs = 5 * 60 * 1000; // 5 分钟
+const _cacheValidMs = 60 * 60 * 1000;
 
 class MusicPage extends ConsumerStatefulWidget {
   const MusicPage({super.key});
@@ -107,9 +70,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     _bootstrap();
   }
 
-  // ═══════════════════════════════════════════
-  // 启动：先看缓存，命中就直接用
-  // ═══════════════════════════════════════════
   Future<void> _bootstrap() async {
     final loadedFromCache = await _tryLoadCache();
     if (loadedFromCache) {
@@ -162,7 +122,10 @@ class _MusicPageState extends ConsumerState<MusicPage> {
         ),
       });
       await prefs.setString(_kCacheKey, json);
-      await prefs.setInt(_kCacheTimeKey, DateTime.now().millisecondsSinceEpoch);
+      await prefs.setInt(
+        _kCacheTimeKey,
+        DateTime.now().millisecondsSinceEpoch,
+      );
     } catch (e) {
       print('⚠️ [推荐] 缓存保存失败: $e');
     }
@@ -176,7 +139,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     _shownKeys.clear();
     for (final cat in _categories) {
       await _loadCategory(cat.id);
-      // ★ 分类之间错峰 300ms，避免一次打出一串请求
       await Future.delayed(const Duration(milliseconds: 300));
     }
     if (mounted) setState(() => _loading = false);
@@ -190,16 +152,14 @@ class _MusicPageState extends ConsumerState<MusicPage> {
 
     final netease = ref.read(sourceByIdProvider)('netease');
     final kugou = ref.read(sourceByIdProvider)('kugou');
-    // ★ QQ 移出推荐页，只在发现页用（避免被限流）
 
-    // ★ 网易先发，等 200ms 再发酷狗，错峰
     final neFuture = netease
         .search(kw, page: page, pageSize: 30)
         .then((r) => r.songs)
         .catchError((e) {
-          print('❌ [推荐] 网易搜索 "$kw" 失败: $e');
-          return <Song>[];
-        });
+      print('❌ [推荐] 网易搜索 "$kw" 失败: $e');
+      return <Song>[];
+    });
 
     await Future.delayed(const Duration(milliseconds: 200));
 
@@ -207,19 +167,16 @@ class _MusicPageState extends ConsumerState<MusicPage> {
         .search(kw, page: page, pageSize: 30)
         .then((r) => r.songs)
         .catchError((e) {
-          print('❌ [推荐] 酷狗搜索 "$kw" 失败: $e');
-          return <Song>[];
-        });
+      print('❌ [推荐] 酷狗搜索 "$kw" 失败: $e');
+      return <Song>[];
+    });
 
     final results = await Future.wait([neFuture, kgFuture]);
     final neSongs = results[0];
     final kgSongs = results[1];
 
-    print(
-      '📋 [推荐:$categoryId] "$kw" → 网易 ${neSongs.length} / 酷狗 ${kgSongs.length}',
-    );
+    print('📋 [推荐:$categoryId] "$kw" → 网易 ${neSongs.length} / 酷狗 ${kgSongs.length}');
 
-    // 双源交替
     final interleaved = <Song>[];
     final maxLen = max(neSongs.length, kgSongs.length);
     for (var i = 0; i < maxLen; i++) {
@@ -243,7 +200,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
     });
   }
 
-  /// 用户主动下拉刷新 → 强制重新拉并更新缓存
   Future<void> _forceRefresh() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kCacheKey);
@@ -254,15 +210,20 @@ class _MusicPageState extends ConsumerState<MusicPage> {
   @override
   Widget build(BuildContext context) {
     final appNotifier = ref.read(appStateProvider.notifier);
-    final playerNotifier = ref.read(playerStateProvider.notifier);
-    final player = ref.watch(playerStateProvider);
     final recent = ref.watch(recentSongsProvider);
     final favorites = ref.watch(favoriteSongsProvider);
     final hideVip = ref.watch(hideVipProvider);
 
-    final visibleRecent = hideVip
-        ? recent.where((s) => !s.isVip).toList()
-        : recent;
+    final currentId = ref.watch(
+      playerStateProvider.select((s) => s.current?.globalId),
+    );
+    final loadingId = ref.watch(
+      playerStateProvider.select((s) => s.isLoading ? s.current?.globalId : null),
+    );
+
+    final favIds = favorites.map((s) => s.globalId).toSet();
+    final visibleRecent =
+        hideVip ? recent.where((s) => !s.isVip).toList() : recent;
 
     return Container(
       color: AppColors.bg,
@@ -274,23 +235,16 @@ class _MusicPageState extends ConsumerState<MusicPage> {
           ),
           slivers: [
             CupertinoSliverRefreshControl(
-              // ★ 下拉刷新强制拉新数据
               onRefresh: _forceRefresh,
-              builder:
-                  (
-                    context,
-                    refreshState,
-                    pulledExtent,
-                    refreshTriggerPullDistance,
-                    refreshIndicatorExtent,
-                  ) {
-                    return const Center(
-                      child: CupertinoActivityIndicator(
-                        radius: 10,
-                        color: AppColors.primary,
-                      ),
-                    );
-                  },
+              builder: (context, refreshState, pulledExtent,
+                  refreshTriggerPullDistance, refreshIndicatorExtent) {
+                return const Center(
+                  child: CupertinoActivityIndicator(
+                    radius: 10,
+                    color: AppColors.primary,
+                  ),
+                );
+              },
             ),
             const SliverToBoxAdapter(
               child: Padding(
@@ -335,34 +289,27 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 ),
               ),
               SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (_, i) {
-                    final s = visibleRecent[i];
-                    final isFav = favorites.any(
-                      (f) => f.globalId == s.globalId,
-                    );
-                    final displaySong = s.copyWith(isFavorite: isFav);
-                    final active = player.current?.globalId == s.globalId;
-                    final isLoadingThis = player.isLoading && active;
-
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: SongTile(
-                        song: displaySong,
-                        active: active,
-                        loading: isLoadingThis,
-                        onTap: () {
-                          playerNotifier.playSong(s, queue: visibleRecent);
-                          appNotifier.addRecent(s);
-                        },
-                        onFavorite: () => appNotifier.toggleFavorite(s),
+                delegate: SliverChildBuilderDelegate((_, i) {
+                  final s = visibleRecent[i];
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: SongTile(
+                      song: s.copyWith(isFavorite: favIds.contains(s.globalId)),
+                      active: currentId == s.globalId,
+                      loading: loadingId == s.globalId,
+                      // ★ 整体替换当前队列
+                      onTap: () => playOrOpen(
+                        context,
+                        ref,
+                        s,
+                        queue: visibleRecent,
                       ),
-                    );
-                  },
-                  childCount: visibleRecent.length > 3
-                      ? 3
-                      : visibleRecent.length,
-                ),
+                      onFavorite: () => appNotifier.toggleFavorite(s),
+                    ),
+                  );
+                },
+                    childCount:
+                        visibleRecent.length > 3 ? 3 : visibleRecent.length),
               ),
             ],
             const SliverToBoxAdapter(
@@ -384,9 +331,9 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 child: _categoryCard(
                   context,
                   cat,
-                  player,
-                  favorites,
-                  playerNotifier,
+                  currentId,
+                  loadingId,
+                  favIds,
                   appNotifier,
                   hideVip,
                 ),
@@ -402,14 +349,15 @@ class _MusicPageState extends ConsumerState<MusicPage> {
   Widget _categoryCard(
     BuildContext context,
     RecommendCategory cat,
-    PlayerState player,
-    List<Song> favorites,
-    PlayerNotifier playerNotifier,
+    String? currentId,
+    String? loadingId,
+    Set<String> favIds,
     AppStateNotifier appNotifier,
     bool hideVip,
   ) {
     final rawSongs = _recommendsByCategory[cat.id] ?? [];
-    final songs = hideVip ? rawSongs.where((s) => !s.isVip).toList() : rawSongs;
+    final songs =
+        hideVip ? rawSongs.where((s) => !s.isVip).toList() : rawSongs;
     final keyword = _keywordByCategory[cat.id] ?? '';
 
     return Padding(
@@ -475,19 +423,21 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                 separatorBuilder: (_, __) => const SizedBox(width: 12),
                 itemBuilder: (_, i) {
                   final s = songs[i];
-                  final isFav = favorites.any((f) => f.globalId == s.globalId);
-                  final displaySong = s.copyWith(isFavorite: isFav);
-                  final active = player.current?.globalId == s.globalId;
-                  final isLoadingThis = player.isLoading && active;
+                  final displaySong = s.copyWith(isFavorite: favIds.contains(s.globalId));
+                  final active = currentId == s.globalId;
+                  final isLoadingThis = loadingId == s.globalId;
 
                   return _songCard(
                     displaySong,
                     active,
                     isLoadingThis,
-                    onTap: () {
-                      playerNotifier.playSong(displaySong, queue: songs);
-                      appNotifier.addRecent(displaySong);
-                    },
+                    // ★ 整体替换当前队列
+                    onTap: () => playOrOpen(
+                      context,
+                      ref,
+                      displaySong,
+                      queue: songs,
+                    ),
                     onFavorite: () => appNotifier.toggleFavorite(displaySong),
                   );
                 },
@@ -526,7 +476,11 @@ class _MusicPageState extends ConsumerState<MusicPage> {
                   child: SizedBox(
                     width: 132,
                     height: 100,
-                    child: _buildCover(song.coverPath),
+                    child: SongCover(
+                      path: song.coverPath,
+                      size: 132,
+                      radius: 0,
+                    ),
                   ),
                 ),
                 if (isLoadingThis)
@@ -601,35 +555,6 @@ class _MusicPageState extends ConsumerState<MusicPage> {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCover(String path) {
-    if (path.isEmpty) {
-      return Container(
-        color: AppColors.coverBg,
-        child: const Center(
-          child: Icon(
-            CupertinoIcons.music_note,
-            size: 32,
-            color: AppColors.muted,
-          ),
-        ),
-      );
-    }
-    return Image.network(
-      path,
-      fit: BoxFit.cover,
-      errorBuilder: (_, __, ___) => Container(
-        color: AppColors.coverBg,
-        child: const Center(
-          child: Icon(
-            CupertinoIcons.music_note,
-            size: 32,
-            color: AppColors.muted,
-          ),
         ),
       ),
     );

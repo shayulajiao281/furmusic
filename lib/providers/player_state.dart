@@ -1,14 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/widgets.dart';
 import '../models/song.dart';
 import 'app_state.dart';
 import 'music_sources.dart';
 import '../services/audio_cache.dart';
+import '../services/lyric_cache.dart';
 
 const _kPlayerStateKey = 'furkid_player_state_v1';
 
@@ -45,6 +48,7 @@ class PlayerState {
 
   PlayerState copyWith({
     Song? current,
+    bool clearCurrent = false,
     bool? isPlaying,
     bool? isLoading,
     Duration? position,
@@ -57,7 +61,7 @@ class PlayerState {
     String? lastError,
     int? errorId,
   }) => PlayerState(
-    current: current ?? this.current,
+    current: clearCurrent ? null : (current ?? this.current),
     isPlaying: isPlaying ?? this.isPlaying,
     isLoading: isLoading ?? this.isLoading,
     position: position ?? this.position,
@@ -77,31 +81,43 @@ class PlayerState {
   }
 }
 
-class PlayerNotifier extends Notifier<PlayerState> {
+class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   final AudioPlayer _player = AudioPlayer();
+  
   Duration _lastKnownDuration = Duration.zero;
   List<Song> _queue = [];
-  String? _targetSongId;
+  ConcatenatingAudioSource? _concatSource;
   late final SharedPreferences _prefs;
   bool _hasSource = false;
   bool _switching = false;
   DateTime? _switchLockTime;
 
-  /// ★ 锁的超时（秒）：超过这个时间自动释放，避免死锁
+  final Map<String, String> _resolvedUrls = {};
+  final Set<String> _cacheTriggeredSongs = {};
+
   static const _lockTimeout = 20;
 
   @override
   PlayerState build() {
     _prefs = ref.read(sharedPrefsProvider);
+    
+    // ★ 监听 App 生命周期
+    WidgetsBinding.instance.addObserver(this);
 
-    _player.setLoopMode(LoopMode.all);
+    // ★ 核心修复：使用 ref.onDispose 替代重写 dispose
+    ref.onDispose(() {
+      WidgetsBinding.instance.removeObserver(this);
+      _player.dispose();
+    });
+
+    _player.setLoopMode(LoopMode.off);
     _player.setShuffleModeEnabled(false);
 
     _player.currentIndexStream.listen((idx) {
       if (idx == null || idx < 0 || idx >= _queue.length) return;
       final song = _queue[idx];
-      if (_targetSongId != null && song.id != _targetSongId) return;
-      if (song.id == _targetSongId) _targetSongId = null;
+
+      if (state.current?.globalId == song.globalId) return;
 
       _lastKnownDuration = song.duration;
       state = state.copyWith(
@@ -113,11 +129,15 @@ class PlayerNotifier extends Notifier<PlayerState> {
       );
       _loadLyricAsync(song);
       _persist();
+      print('🎵 [player] 原生队列切换到第 $idx 首: ${song.title}');
     });
 
-    _player.playingStream.listen((p) {
-      state = state.copyWith(isPlaying: p);
-      if (!p) _persist();
+    _player.playingStream.listen((playing) {
+      state = state.copyWith(
+        isPlaying: playing,
+        isLoading: playing ? false : state.isLoading,
+      );
+      if (!playing) _persist();
     });
 
     _player.positionStream.listen((pos) {
@@ -131,6 +151,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
         }
       }
       state = state.copyWith(position: pos, lyricIndex: idx);
+
+      if (pos > Duration.zero) {
+        final song = state.current;
+        if (song != null) _triggerCacheIfNeeded(song);
+      }
     });
 
     _player.durationStream.listen((d) {
@@ -140,17 +165,60 @@ class PlayerNotifier extends Notifier<PlayerState> {
       }
     });
 
+    _player.playbackEventStream.listen((event) {}, onError: (Object e, StackTrace st) {
+      print('❌ [player] 播放发生错误: $e');
+      if (state.isPlaying && _queue.length > 1) {
+        print('🔄 [player] 播放异常，尝试下一首');
+        next();
+      }
+    });
+
     return _restore();
   }
 
-  // ═══ 锁管理：带超时 ═══
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (this.state.isPlaying && !_player.playing && _hasSource) {
+        print('🔄 [player] 从后台恢复，强制重新播放');
+        _player.play().catchError((_) {});
+      }
+    }
+  }
+
+  Future<void> _triggerCacheIfNeeded(Song song) async {
+    if (song.source == 'local') return;
+    if (_cacheTriggeredSongs.contains(song.globalId)) return;
+
+    final cached = await AudioCache.get(song.globalId);
+    if (cached != null) {
+      _cacheTriggeredSongs.add(song.globalId);
+      return;
+    }
+    if (AudioCache.isDownloading(song.globalId)) {
+      _cacheTriggeredSongs.add(song.globalId);
+      return;
+    }
+
+    final url = _resolvedUrls[song.globalId];
+    if (url == null || !url.startsWith('http')) return;
+
+    _cacheTriggeredSongs.add(song.globalId);
+    
+    final source = ref.read(sourceByIdProvider)(song.source);
+    print('📥 [cache] 播放已启动，立刻触发后台缓存: ${song.title}');
+    AudioCache.download(
+      song.globalId,
+      url,
+      headers: source.audioHeaders,
+    ).then((_) => AudioCache.trim()).catchError((_) {});
+  }
+
   bool get _isSwitching {
     if (!_switching) return false;
-    // 检查是否超时
     if (_switchLockTime != null) {
       final elapsed = DateTime.now().difference(_switchLockTime!);
       if (elapsed.inSeconds > _lockTimeout) {
-        print('🔓 [player] 锁超时 ${elapsed.inSeconds}s，自动释放');
         _switching = false;
         _switchLockTime = null;
         return false;
@@ -171,7 +239,11 @@ class PlayerNotifier extends Notifier<PlayerState> {
 
   void _reportError(String msg) {
     print('🚨 [player] $msg');
-    state = state.copyWith(lastError: msg, errorId: state.errorId + 1);
+    state = state.copyWith(
+      lastError: msg,
+      errorId: state.errorId + 1,
+      isLoading: false,
+    );
   }
 
   void expand() {
@@ -182,7 +254,6 @@ class PlayerNotifier extends Notifier<PlayerState> {
     if (state.expanded) state = state.copyWith(expanded: false);
   }
 
-  // ═══ 持久化 ═══
   PlayerState _restore() {
     try {
       final raw = _prefs.getString(_kPlayerStateKey);
@@ -261,162 +332,55 @@ class PlayerNotifier extends Notifier<PlayerState> {
     }
   }
 
-  Future<void> _resetPlayer() async {
-    try {
-      await _player.stop();
-    } catch (_) {}
-    _hasSource = false;
-    _targetSongId = null;
-  }
-
   String _failReason(Song song) {
-    if (song.isVip) {
-      return '《${song.title}》需要 VIP 会员，无法播放';
-    }
-    return '《${song.title}》暂时无法播放（可能是版权限制）';
+    if (song.isVip) return '《${song.title}》需要 VIP 会员';
+    return '《${song.title}》暂时无法播放';
   }
 
-  // ═══ 播放 ═══
-  Future<void> playSong(Song song, {List<Song>? queue}) async {
-    // ★ 检查锁（自动超时释放）
-    if (_isSwitching) {
-      print('⚠️ [player] 正在切歌，忽略本次点击');
-      return;
+  Future<Song?> _resolveOne(Song song) async {
+    if (song.source == 'local') {
+      if (!File(song.audioPath).existsSync()) return null;
+      return song;
     }
-    _lock();
-    print('🔒 [player] 加锁，播放 ${song.title}');
 
-    try {
-      HapticFeedback.mediumImpact();
-      final list = queue ?? [song];
-      _targetSongId = song.id;
-
-      // 停掉上一首
+    final cached = await AudioCache.get(song.globalId);
+    if (cached != null) {
       try {
-        await _player.stop().timeout(const Duration(seconds: 3));
-      } catch (e) {
-        print('⚠️ [player] stop 超时/异常: $e');
-      }
-      _hasSource = false;
-
-      state = state.copyWith(
-        current: song,
-        expanded: true,
-        isLoading: true,
-        isPlaying: false,
-        position: Duration.zero,
-        duration: song.duration,
-        lyric: const [],
-        lyricIndex: -1,
-      );
-
-      // ★ 只解析当前这一首，避免整队列卡住
-      print('🔍 [player] 解析 ${song.title} (${song.source})');
-      final current = await _resolveOne(song).timeout(
-        const Duration(seconds: 20),
-        onTimeout: () {
-          print('❌ [player] _resolveOne 超时');
-          return null;
-        },
-      );
-
-      if (current == null || current.audioPath.isEmpty) {
-        print('❌ [player] 当前歌解析失败');
-        await _resetPlayer();
-        state = state.copyWith(isLoading: false);
-        _reportError(_failReason(song));
-        return;
-      }
-
-      // 队列里其他歌保留原始信息，不预解析
-      _queue = list;
-      state = state.copyWith(isLoading: false, queue: List.unmodifiable(list));
-
-      try {
-        print(
-          '🎵 [player] setAudioSource: ${current.audioPath.substring(0, current.audioPath.length.clamp(0, 60))}...',
-        );
-        await _player
-            .setAudioSource(_toSource(current))
-            .timeout(const Duration(seconds: 20));
-
-        _hasSource = true;
-        await _player.play();
-        HapticFeedback.lightImpact();
-        _persist();
-        print('✅ [player] 播放成功');
-      } catch (e) {
-        print('❌ [player] setAudioSource/play 失败: $e');
-        await _resetPlayer();
-        state = state.copyWith(isLoading: false, isPlaying: false);
-        _reportError(_failReason(song));
-      }
-    } catch (e) {
-      print('❌ [player] playSong 异常: $e');
-      await _resetPlayer();
-      state = state.copyWith(isLoading: false, isPlaying: false);
-      _reportError('播放失败: $e');
-    } finally {
-      _unlock();
-      print('🔓 [player] 解锁');
-    }
-  }
-
-  Future<void> _resumeFromRestore() async {
-    final song = state.current;
-    if (song == null) return;
-    if (_isSwitching) return;
-    _lock();
-
-    try {
-      final resumeAt = state.position;
-      _targetSongId = song.id;
-      state = state.copyWith(isLoading: true);
-
-      final current = await _resolveOne(
-        song,
-      ).timeout(const Duration(seconds: 20), onTimeout: () => null);
-
-      if (current == null || current.audioPath.isEmpty) {
-        await _resetPlayer();
-        state = state.copyWith(isLoading: false);
-        _reportError('《${song.title}》无法恢复播放');
-        return;
-      }
-
-      _queue = state.queue.isNotEmpty ? state.queue : [song];
-      state = state.copyWith(
-        isLoading: false,
-        queue: List.unmodifiable(_queue),
-      );
-
-      try {
-        await _player
-            .setAudioSource(_toSource(current))
-            .timeout(const Duration(seconds: 20));
-        _hasSource = true;
-        if (resumeAt > Duration.zero) {
-          await _player.seek(resumeAt).timeout(const Duration(seconds: 5));
+        if (File(cached).lengthSync() > 1024) {
+          return song.copyWith(audioPath: cached);
+        } else {
+          File(cached).deleteSync();
         }
-        await _player.play();
-      } catch (e) {
-        print('❌ [player] resume 失败: $e');
-        await _resetPlayer();
-        state = state.copyWith(isLoading: false, isPlaying: false);
-        _reportError(_failReason(song));
-      }
-    } finally {
-      _unlock();
+      } catch (_) {}
     }
+
+    if (_resolvedUrls.containsKey(song.globalId)) {
+      return song.copyWith(audioPath: _resolvedUrls[song.globalId]);
+    }
+
+    String? url = song.audioPath;
+    if (url.isEmpty || !url.startsWith('http')) {
+      final source = ref.read(sourceByIdProvider)(song.source);
+      url = await source.getSongUrl(song.id).timeout(
+        const Duration(seconds: 6),
+        onTimeout: () => null,
+      );
+    }
+
+    if (url == null || url.isEmpty) return null;
+
+    _resolvedUrls[song.globalId] = url;
+    return song.copyWith(audioPath: url);
   }
 
-  AudioSource _toSource(Song s) {
-    final isLocal = s.source == 'local' && !s.audioPath.startsWith('http');
+  AudioSource _singleSource(Song s) {
+    final path = s.audioPath;
+    final isLocal = !path.startsWith('http');
     final source = ref.read(sourceByIdProvider)(s.source);
     final headers = isLocal ? null : source.audioHeaders;
 
     return AudioSource.uri(
-      isLocal ? Uri.file(s.audioPath) : Uri.parse(s.audioPath),
+      isLocal ? Uri.file(path) : Uri.parse(path),
       tag: MediaItem(
         id: s.globalId,
         title: s.title,
@@ -434,67 +398,337 @@ class PlayerNotifier extends Notifier<PlayerState> {
     );
   }
 
-  Future<Song?> _resolveOne(Song song) async {
-    if (song.source == 'local') return song;
-
-    final cached = await AudioCache.get(song.globalId);
-    if (cached != null) {
-      print('📂 [player] 缓存命中: ${song.title}');
-      return song.copyWith(audioPath: cached);
+  Future<bool> _seekAndPlay(int idx, Song song) async {
+    HapticFeedback.mediumImpact();
+    state = state.copyWith(
+      current: song,
+      expanded: true,
+      isLoading: true,
+      position: Duration.zero,
+      duration: song.duration,
+      lyric: const [],
+      lyricIndex: -1,
+    );
+    try {
+      await _player.seek(Duration.zero, index: idx);
+      unawaited(_player.play());
+      state = state.copyWith(isLoading: false, isPlaying: true);
+      _loadLyricAsync(song);
+      return true;
+    } catch (e) {
+      print('❌ [player] seek 失败: $e');
+      return false;
     }
-
-    String? url = song.audioPath;
-    if (url.isEmpty || !url.startsWith('http')) {
-      final source = ref.read(sourceByIdProvider)(song.source);
-      url = await source
-          .getSongUrl(song.id)
-          .timeout(
-            const Duration(seconds: 15),
-            onTimeout: () {
-              print('❌ [player] getSongUrl 超时: ${song.title}');
-              return null;
-            },
-          );
-    }
-
-    if (url == null || url.isEmpty) {
-      print('❌ [player] URL 为空: ${song.title}');
-      return null;
-    }
-
-    final source = ref.read(sourceByIdProvider)(song.source);
-    AudioCache.download(
-      song.globalId,
-      url,
-      headers: source.audioHeaders,
-    ).then((_) => AudioCache.trim()).catchError((_) {});
-
-    return song.copyWith(audioPath: url);
   }
 
-  void _loadLyricAsync(Song song) {
+  Future<bool> _hotInsertQueue(Song song) async {
+    final concat = _concatSource;
+    if (concat == null) return false;
+
+    print('🔥 [player] 走热插拔逻辑，目标: ${song.title}');
+    final resolvedTarget = await _resolveOne(song);
+    if (resolvedTarget == null || resolvedTarget.audioPath.isEmpty) {
+      _reportError(_failReason(song));
+      return false;
+    }
+
+    try {
+      final existingIdx = _queue.indexWhere((s) => s.globalId == song.globalId);
+      if (existingIdx >= 0) {
+        await concat.removeAt(existingIdx);
+        _queue.removeAt(existingIdx);
+      }
+      
+      await concat.insert(0, _singleSource(resolvedTarget));
+      _queue.insert(0, resolvedTarget);
+
+      return await _seekAndPlay(0, resolvedTarget);
+    } catch (e) {
+      print('❌ [player] 热插入失败: $e');
+      return false;
+    }
+  }
+
+  Future<bool> playSong(
+    Song song, {
+    List<Song>? queue,
+    bool fromAutoPlay = false,
+  }) async {
+    if (_isSwitching) return false;
+
+    final rawList = queue ?? [song];
+    final seen = <String>{};
+    final list = <Song>[];
+    for (final s in rawList) {
+      if (seen.add(s.globalId)) list.add(s);
+    }
+    if (!list.any((s) => s.globalId == song.globalId)) {
+      list.add(song);
+    }
+
+    if (_hasSource && _concatSource != null) {
+      // 判断1：列表和顺序完全一致
+      bool isExactlySame = list.length == _queue.length;
+      if (isExactlySame) {
+        for (int i = 0; i < list.length; i++) {
+          if (list[i].globalId != _queue[i].globalId) {
+            isExactlySame = false;
+            break;
+          }
+        }
+      }
+      
+      if (isExactlySame) {
+        final idx = _queue.indexWhere((s) => s.globalId == song.globalId);
+        if (idx >= 0) {
+          print('🎯 [player] 点击当前队列内的歌，直接 seek 到第 $idx 首');
+          return await _seekAndPlay(idx, song);
+        }
+      }
+
+      // 判断2：发现页/本地插队
+      if (list.isNotEmpty && list[0].globalId == song.globalId) {
+        final currentIds = _queue.map((e) => e.globalId).toSet();
+        final overlap = list.where((e) => currentIds.contains(e.globalId)).length;
+        if (overlap >= _queue.length - 1) {
+          print('🔥 [player] 插队播放，走热插入逻辑');
+          return await _hotInsertQueue(song);
+        }
+      }
+    }
+
+    // 判断3：全量重建
+    _lock();
+    print('🔒 [player] 切换了其他列表/首次播放，构建底层队列: ${song.title}');
+
+    try {
+      HapticFeedback.mediumImpact();
+
+      state = state.copyWith(
+        current: song,
+        expanded: true,
+        isLoading: true,
+        isPlaying: false,
+        position: Duration.zero,
+        duration: song.duration,
+        lyric: const [],
+        lyricIndex: -1,
+        queue: List.unmodifiable(list),
+      );
+      _queue = list;
+
+      final resolvedList = await Future.wait(list.map((s) async {
+        try {
+          return await _resolveOne(s);
+        } catch (e) {
+          return null;
+        }
+      }));
+
+      final validSongs = <Song>[];
+      int initialIndex = -1;
+      for (var i = 0; i < list.length; i++) {
+        final r = resolvedList[i];
+        if (r != null && r.audioPath.isNotEmpty) {
+          if (list[i].globalId == song.globalId) initialIndex = validSongs.length;
+          validSongs.add(r);
+        }
+      }
+
+      if (initialIndex < 0) {
+        print('❌ [player] 当前歌曲解析失败');
+        state = state.copyWith(isLoading: false, isPlaying: false);
+        if (!fromAutoPlay) _reportError(_failReason(song));
+        return false;
+      }
+
+      _queue = validSongs;
+      final sources = validSongs.map((s) => _singleSource(s)).toList();
+      final concat = ConcatenatingAudioSource(children: sources);
+      _concatSource = concat;
+
+      try {
+        await _player
+            .setAudioSource(
+              concat,
+              initialIndex: initialIndex,
+              initialPosition: Duration.zero,
+            )
+            .timeout(const Duration(seconds: 30));
+        _hasSource = true;
+      } catch (e) {
+        print('❌ [player] setAudioSource 失败: $e');
+        state = state.copyWith(isLoading: false, isPlaying: false);
+        if (!fromAutoPlay) _reportError(_failReason(song));
+        return false;
+      }
+
+      _applyModeToPlayer(state.mode);
+
+      unawaited(_player.play());
+      state = state.copyWith(
+        isLoading: false,
+        isPlaying: true,
+        queue: List.unmodifiable(validSongs),
+      );
+      HapticFeedback.lightImpact();
+      _persist();
+      _loadLyricAsync(song);
+
+      print('✅ [player] 全新队列播放已启动');
+      return true;
+    } catch (e) {
+      print('❌ [player] playSong 异常: $e');
+      state = state.copyWith(isLoading: false, isPlaying: false);
+      if (!fromAutoPlay) _reportError('播放失败: $e');
+      return false;
+    } finally {
+      _unlock();
+    }
+  }
+
+  Future<void> _resumeFromRestore() async {
+    final song = state.current;
+    if (song == null) return;
+    if (_isSwitching) return;
+    _lock();
+
+    try {
+      final resumeAt = state.position;
+      state = state.copyWith(isLoading: true);
+
+      final list = state.queue.isNotEmpty ? state.queue : [song];
+      
+      final resolvedList = await Future.wait(list.map((s) async {
+        try {
+          return await _resolveOne(s);
+        } catch (_) {
+          return null;
+        }
+      }));
+
+      final validSongs = <Song>[];
+      int initialIndex = -1;
+      for (var i = 0; i < list.length; i++) {
+        final r = resolvedList[i];
+        if (r != null && r.audioPath.isNotEmpty) {
+          if (list[i].globalId == song.globalId) initialIndex = validSongs.length;
+          validSongs.add(r);
+        }
+      }
+
+      if (initialIndex < 0) {
+        state = state.copyWith(isLoading: false, isPlaying: false);
+        _reportError(_failReason(song));
+        return;
+      }
+
+      _queue = validSongs;
+      final sources = validSongs.map((s) => _singleSource(s)).toList();
+      final concat = ConcatenatingAudioSource(children: sources);
+      _concatSource = concat;
+
+      try {
+        await _player
+            .setAudioSource(
+              concat,
+              initialIndex: initialIndex,
+              initialPosition: resumeAt,
+            )
+            .timeout(const Duration(seconds: 30));
+        _hasSource = true;
+      } catch (e) {
+        print('❌ [player] resume setAudioSource 失败: $e');
+        state = state.copyWith(isLoading: false, isPlaying: false);
+        _reportError(_failReason(song));
+        return;
+      }
+
+      _applyModeToPlayer(state.mode);
+      unawaited(_player.play());
+      state = state.copyWith(
+        isLoading: false,
+        isPlaying: true,
+        queue: List.unmodifiable(validSongs),
+      );
+      _loadLyricAsync(song);
+    } catch (e) {
+      print('❌ [player] resume 异常: $e');
+      state = state.copyWith(isLoading: false, isPlaying: false);
+      _reportError(_failReason(song));
+    } finally {
+      _unlock();
+    }
+  }
+
+  void _loadLyricAsync(Song song) async {
+    final cached = await LyricCache.load(song.globalId);
+    if (cached.isNotEmpty) {
+      if (state.current?.globalId == song.globalId) {
+        state = state.copyWith(lyric: cached);
+      }
+    }
+
     final source = ref.read(sourceByIdProvider)(song.source);
     source
         .getLyric(song.id)
         .then((lyric) {
-          if (state.current?.globalId == song.globalId && lyric.isNotEmpty) {
+          if (lyric.isEmpty) return;
+          if (state.current?.globalId == song.globalId) {
             state = state.copyWith(lyric: lyric);
           }
+          LyricCache.save(song.globalId, lyric);
         })
         .catchError((_) {});
   }
 
   Future<void> playFromQueue(int idx) async {
     if (idx < 0 || idx >= _queue.length) return;
+    if (!_hasSource) {
+      await playSong(_queue[idx], queue: _queue);
+      return;
+    }
     try {
       await _player.seek(Duration.zero, index: idx);
-      if (!_player.playing) await _player.play();
-      HapticFeedback.mediumImpact();
+      if (!state.isPlaying) unawaited(_player.play());
     } catch (e) {
-      print('❌ [player] playFromQueue 失败: $e');
-      await _resetPlayer();
-      state = state.copyWith(isPlaying: false, isLoading: false);
+      print('⚠️ [player] playFromQueue 异常: $e');
     }
+  }
+
+  void removeFromQueue(Song song) {
+    final oldIdx = _queue.indexWhere((s) => s.globalId == song.globalId);
+    if (oldIdx < 0) return;
+
+    final newQueue = [..._queue]..removeAt(oldIdx);
+    _queue = newQueue;
+
+    if (newQueue.isEmpty) {
+      _player.stop();
+      _hasSource = false;
+      state = state.copyWith(
+        clearCurrent: true,
+        queue: const [],
+        isPlaying: false,
+        isLoading: false,
+        position: Duration.zero,
+        duration: Duration.zero,
+        lyric: const [],
+        lyricIndex: -1,
+      );
+      _prefs.remove(_kPlayerStateKey);
+      return;
+    }
+
+    final concat = _concatSource;
+    if (concat != null) {
+      concat.removeAt(oldIdx).catchError((e) {
+        print('⚠️ [player] concat.removeAt 失败: $e');
+      });
+    }
+
+    state = state.copyWith(queue: List.unmodifiable(newQueue));
+    _persist();
   }
 
   Future<void> setPlayMode(PlayMode mode) async {
@@ -510,22 +744,51 @@ class PlayerNotifier extends Notifier<PlayerState> {
   }
 
   Future<void> next() async {
-    if (_player.hasNext) {
-      HapticFeedback.selectionClick();
-      await _player.seekToNext();
+    if (_queue.isEmpty) return;
+    if (!_hasSource) {
+      await _resumeFromRestore();
+      return;
+    }
+    try {
+      if (_queue.length == 1) {
+        await _player.seek(Duration.zero, index: 0);
+      } else if (_player.hasNext) {
+        await _player.seekToNext();
+      } else {
+        await _player.seek(Duration.zero, index: 0);
+      }
+      if (!state.isPlaying) unawaited(_player.play());
+    } catch (e) {
+      print('⚠️ [player] next 异常: $e');
     }
   }
 
   Future<void> previous() async {
-    if (_player.hasPrevious) {
-      HapticFeedback.selectionClick();
-      await _player.seekToPrevious();
+    if (_queue.isEmpty) return;
+    if (!_hasSource) {
+      await _resumeFromRestore();
+      return;
+    }
+    try {
+      if (_queue.length == 1) {
+        await _player.seek(Duration.zero, index: 0);
+      } else if (_player.hasPrevious) {
+        await _player.seekToPrevious();
+      } else {
+        await _player.seek(Duration.zero, index: _queue.length - 1);
+      }
+      if (!state.isPlaying) unawaited(_player.play());
+    } catch (e) {
+      print('⚠️ [player] previous 异常: $e');
     }
   }
 
   Future<void> togglePlay() async {
     if (state.isPlaying) {
-      await _player.pause();
+      try {
+        await _player.pause().timeout(const Duration(seconds: 3));
+      } catch (_) {}
+      state = state.copyWith(isPlaying: false);
       return;
     }
     if (!_hasSource && state.current != null) {
@@ -533,10 +796,9 @@ class PlayerNotifier extends Notifier<PlayerState> {
       return;
     }
     try {
-      await _player.play();
+      unawaited(_player.play());
+      state = state.copyWith(isPlaying: true);
     } catch (e) {
-      print('❌ [player] togglePlay 失败123: $e');
-      await _resetPlayer();
       state = state.copyWith(isPlaying: false, isLoading: false);
       final s = state.current;
       if (s != null) _reportError(_failReason(s));

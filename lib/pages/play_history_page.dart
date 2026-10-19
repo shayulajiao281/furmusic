@@ -1,8 +1,11 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/song.dart';
 import '../providers/app_state.dart';
 import '../providers/player_state.dart';
 import '../theme/app_colors.dart';
+import '../utils/play_or_open.dart';
+import '../widgets/mini_player.dart';
 import '../widgets/song_tile.dart';
 
 class PlayHistoryPage extends ConsumerWidget {
@@ -11,9 +14,22 @@ class PlayHistoryPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final recent = ref.watch(recentSongsProvider);
-    final favorites = ref.watch(favoriteSongsProvider);
-    final player = ref.watch(playerStateProvider);
-    final playerNotifier = ref.read(playerStateProvider.notifier);
+    
+    final favIds = ref.watch(
+      favoriteSongsProvider.select(
+        (list) => list.map((s) => s.globalId).toSet(),
+      ),
+    );
+    final currentId = ref.watch(
+      playerStateProvider.select((s) => s.current?.globalId),
+    );
+    final loadingId = ref.watch(
+      playerStateProvider.select((s) => s.isLoading ? s.current?.globalId : null),
+    );
+    final hasSong = ref.watch(
+      playerStateProvider.select((s) => s.current != null),
+    );
+
     final appNotifier = ref.read(appStateProvider.notifier);
 
     return CupertinoPageScaffold(
@@ -59,37 +75,44 @@ class PlayHistoryPage extends ConsumerWidget {
       ),
       child: Container(
         color: AppColors.bg,
-        // ★ 关键：SafeArea 在 child 里读 MediaQuery，
-        // 此时 padding.top 已经包含「状态栏 + 导航栏」，列表自动避开
-        child: SafeArea(
-          top: true,
-          bottom: false,
-          child: recent.isEmpty
-              ? _empty()
-              : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-                  itemCount: recent.length,
-                  itemBuilder: (_, i) {
-                    final s = recent[i];
-                    final isFav = favorites.any(
-                      (f) => f.globalId == s.globalId,
-                    );
-                    final displaySong = s.copyWith(isFavorite: isFav);
-                    final active = player.current?.globalId == s.globalId;
-                    final isLoadingThis = player.isLoading && active;
-
-                    return SongTile(
-                      song: displaySong,
-                      active: active,
-                      loading: isLoadingThis,
-                      onTap: () {
-                        playerNotifier.playSong(s, queue: recent);
-                        appNotifier.addRecent(s);
-                      },
-                      onFavorite: () => appNotifier.toggleFavorite(s),
-                    );
-                  },
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: SafeArea(
+                top: true,
+                bottom: false,
+                child: Padding(
+                  padding: EdgeInsets.only(bottom: hasSong ? 56 : 0),
+                  child: recent.isEmpty
+                      ? _empty()
+                      : ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                          itemCount: recent.length,
+                          itemBuilder: (_, i) {
+                            final s = recent[i];
+                            return _HistoryTile(
+                              key: ValueKey(s.globalId),
+                              song: s,
+                              isFav: favIds.contains(s.globalId),
+                              active: currentId == s.globalId,
+                              loading: loadingId == s.globalId,
+                              onFav: () => appNotifier.toggleFavorite(s),
+                            );
+                          },
+                        ),
                 ),
+              ),
+            ),
+            if (hasSong)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: RepaintBoundary(
+                  child: const MiniPlayer(useSafeArea: true),
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -108,4 +131,38 @@ class PlayHistoryPage extends ConsumerWidget {
       ],
     ),
   );
+}
+
+class _HistoryTile extends ConsumerWidget {
+  final Song song;
+  final bool isFav;
+  final bool active;
+  final bool loading;
+  final VoidCallback onFav;
+
+  const _HistoryTile({
+    super.key,
+    required this.song,
+    required this.isFav,
+    required this.active,
+    required this.loading,
+    required this.onFav,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return RepaintBoundary(
+      child: SongTile(
+        song: song.copyWith(isFavorite: isFav),
+        active: active,
+        loading: loading,
+        onTap: () {
+          final queue = ref.read(recentSongsProvider);
+          // ★ 整体替换
+          playOrOpen(context, ref, song, queue: queue);
+        },
+        onFavorite: onFav,
+      ),
+    );
+  }
 }
