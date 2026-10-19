@@ -97,8 +97,12 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   int _consecutiveErrors = 0;
   DateTime? _lastErrorTime;
 
-  /// 切换锁：切歌期间屏蔽所有 stream，防止旧状态覆盖新 UI
+  /// 切换锁：只屏蔽 processingState / currentIndex / position / duration，
+  /// 不屏蔽 playingStream
   bool _switching = false;
+
+  /// 播放令牌：新点击取代旧点击
+  int _playToken = 0;
 
   @override
   PlayerState build() {
@@ -123,19 +127,28 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   }
 
   void _bindEngineEvents() {
-    _engine.player.playerStateStream.listen(
+    // ★ isPlaying 永远由真实 playing 驱动，不屏蔽
+    _engine.player.playingStream.listen(
+      (playing) {
+        state = state.copyWith(isPlaying: playing);
+        if (!playing) _persist();
+      },
+      onError: (Object e, StackTrace st) {
+        print('⚠️ [player] playingStream error: $e');
+      },
+    );
+
+    // ★ isLoading 由 processingState 驱动，切换期间屏蔽
+    _engine.player.processingStateStream.listen(
       (ps) {
         if (_switching) return;
         state = state.copyWith(
-          isPlaying: ps.playing,
           isLoading:
-              ps.processingState == ProcessingState.loading ||
-              ps.processingState == ProcessingState.buffering,
+              ps == ProcessingState.loading || ps == ProcessingState.buffering,
         );
-        if (!ps.playing) _persist();
       },
       onError: (Object e, StackTrace st) {
-        print('⚠️ [player] playerStateStream error: $e');
+        print('⚠️ [player] processingStateStream error: $e');
       },
     );
   }
@@ -209,7 +222,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     if (_consecutiveErrors >= 3) {
       print('🛑 [player] 连续播放失败 3 次，停止自动切换');
       _consecutiveErrors = 0;
-      state = state.copyWith(isPlaying: false, isLoading: false);
       final s = state.current;
       if (s != null) _reportError(_failReason(s));
       return;
@@ -423,37 +435,64 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     return song.copyWith(audioPath: url);
   }
 
-  /// 加速版：已解析的歌瞬间返回
-  Future<List<Song>> _resolveAll(List<Song> list) async {
-    final resolved = await Future.wait(
-      list.map((s) async {
-        if (s.source == 'local') {
-          if (File(s.audioPath).existsSync()) return s;
-          return null;
-        }
-        if (s.audioPath.startsWith('http')) {
-          return s;
-        }
-        if (_resolvedUrls.containsKey(s.globalId)) {
-          return s.copyWith(audioPath: _resolvedUrls[s.globalId]);
-        }
-        final cached = await AudioCache.get(s.globalId);
-        if (cached != null) {
-          try {
-            final f = File(cached);
-            if (await f.exists() && await f.length() > 1024) {
-              return s.copyWith(audioPath: cached);
-            }
-          } catch (_) {}
-        }
+  /// 只解析 target（priority），其它未解析的歌跳过
+  Future<List<Song>> _resolveAll(List<Song> list, {Song? priority}) async {
+    final slots = List<Song?>.filled(list.length, null);
+
+    // 第一轮：已解析/已缓存的直接占位
+    for (var i = 0; i < list.length; i++) {
+      final s = list[i];
+      if (s.source == 'local') {
+        if (File(s.audioPath).existsSync()) slots[i] = s;
+        continue;
+      }
+      if (s.audioPath.startsWith('http')) {
+        slots[i] = s;
+        continue;
+      }
+      if (_resolvedUrls.containsKey(s.globalId)) {
+        slots[i] = s.copyWith(audioPath: _resolvedUrls[s.globalId]);
+        continue;
+      }
+    }
+
+    // 第二轮：异步检查本地缓存
+    for (var i = 0; i < list.length; i++) {
+      if (slots[i] != null) continue;
+      final s = list[i];
+      if (s.source == 'local') continue;
+      if (s.audioPath.startsWith('http')) continue;
+      if (_resolvedUrls.containsKey(s.globalId)) continue;
+
+      final cached = await AudioCache.get(s.globalId);
+      if (cached != null) {
         try {
-          return await _resolveOne(s);
-        } catch (_) {
-          return null;
+          final f = File(cached);
+          if (await f.exists() && await f.length() > 1024) {
+            slots[i] = s.copyWith(audioPath: cached);
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 第三轮：只解析 priority
+    if (priority != null) {
+      for (var i = 0; i < list.length; i++) {
+        if (slots[i] != null) continue;
+        if (list[i].globalId != priority.globalId) continue;
+        try {
+          final resolved = await _resolveOne(list[i]);
+          if (resolved != null && resolved.audioPath.isNotEmpty) {
+            slots[i] = resolved;
+          }
+        } catch (e) {
+          print('⚠️ [resolve] priority 解析失败: $e');
         }
-      }),
-    );
-    return resolved.whereType<Song>().toList();
+        break;
+      }
+    }
+
+    return slots.whereType<Song>().toList();
   }
 
   AudioSource _singleSource(Song s) {
@@ -462,7 +501,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     final source = ref.read(sourceByIdProvider)(s.source);
     final headers = isLocal ? null : source.audioHeaders;
 
-    // 只给本地/已缓存的封面，避免断网时阻塞 setAudioSources
     Uri? artUri;
     if (s.coverPath.isNotEmpty) {
       if (!s.coverPath.startsWith('http')) {
@@ -514,7 +552,60 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     return true;
   }
 
-  Future<bool> _seekAndPlay(int idx, Song song) async {
+  // ═══════════════════════════════════════════
+  // 播放入口
+  // ═══════════════════════════════════════════
+
+  Future<bool> playSong(
+    Song song, {
+    List<Song>? queue,
+    bool fromAutoPlay = false,
+  }) async {
+    final myToken = ++_playToken;
+    final rawList = queue ?? [song];
+    final list = _deduplicate(rawList, song);
+
+    if (_engine.hasSource) {
+      await _engine.pause();
+    }
+    if (myToken != _playToken) {
+      print('🚫 [player] playSong 被新的点击取代');
+      return false;
+    }
+
+    if (_engine.hasSource && _isSameQueue(list)) {
+      final idx = _queue.indexWhere((s) => s.globalId == song.globalId);
+      if (idx >= 0) {
+        print('🎯 [player] 点击当前队列内的歌，直接 seek 到第 $idx 首');
+        return await _seekAndPlay(idx, song, myToken: myToken);
+      }
+    }
+
+    if (_engine.hasSource &&
+        list.isNotEmpty &&
+        list.first.globalId == song.globalId) {
+      final currentIds = _queue.map((e) => e.globalId).toSet();
+      final overlap = list.where((e) => currentIds.contains(e.globalId)).length;
+      if (overlap >= _queue.length - 1) {
+        print('🔥 [player] 插队播放，走热插入逻辑');
+        final ok = await _hotInsertQueue(song, myToken: myToken);
+        if (ok) return true;
+        if (myToken != _playToken) return false;
+        print('⚠️ [player] 热插入失败，回退到全量重建');
+      }
+    }
+
+    print('🔒 [player] 构建底层队列: ${song.title}');
+    return await _buildNewQueue(
+      list,
+      song,
+      myToken: myToken,
+      fromAutoPlay: fromAutoPlay,
+    );
+  }
+
+  Future<bool> _seekAndPlay(int idx, Song song, {required int myToken}) async {
+    if (myToken != _playToken) return false;
     _switching = true;
     try {
       HapticFeedback.mediumImpact();
@@ -522,7 +613,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         current: song,
         expanded: true,
         isLoading: true,
-        isPlaying: false,
         position: Duration.zero,
         duration: song.duration,
         lyric: const [],
@@ -533,12 +623,15 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         await _engine.seekToIndex(idx);
       } catch (e) {
         print('❌ [player] seek 失败: $e');
-        state = state.copyWith(isLoading: false, isPlaying: false);
+        await _engine.reset();
+        state = state.copyWith(isLoading: false);
         _reportError(_failReason(song));
         return false;
       }
 
-      state = state.copyWith(isLoading: false, isPlaying: true);
+      if (myToken != _playToken) return false;
+
+      state = state.copyWith(isLoading: false);
       _loadLyricAsync(song);
       _persist();
 
@@ -550,12 +643,16 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     }
   }
 
-  Future<bool> _hotInsertQueue(Song song) async {
+  Future<bool> _hotInsertQueue(Song song, {required int myToken}) async {
+    if (myToken != _playToken) return false;
     _switching = true;
     try {
       print('🔥 [player] 走热插拔逻辑，目标: ${song.title}');
       final resolved = await _resolveOne(song);
+      if (myToken != _playToken) return false;
+
       if (resolved == null || resolved.audioPath.isEmpty) {
+        await _engine.reset();
         _reportError(_failReason(song));
         return false;
       }
@@ -565,7 +662,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         current: resolved,
         expanded: true,
         isLoading: true,
-        isPlaying: false,
         position: Duration.zero,
         duration: resolved.duration,
         lyric: const [],
@@ -582,71 +678,36 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         index: 0,
       );
 
+      if (myToken != _playToken) return false;
+
       if (!ok) {
         _queue = backup;
+        await _engine.reset();
         state = state.copyWith(
           isLoading: false,
-          isPlaying: false,
           queue: List.unmodifiable(backup),
         );
         print('❌ [player] 热插播失败，已回滚');
         return false;
       }
 
-      state = state.copyWith(isLoading: false, isPlaying: true);
+      state = state.copyWith(isLoading: false);
       _loadLyricAsync(resolved);
       _persist();
       print('✅ [player] 热插播成功');
-      // insertAndPlay 内部已 play，不再额外调
       return true;
     } finally {
       _switching = false;
     }
   }
 
-  Future<bool> playSong(
-    Song song, {
-    List<Song>? queue,
-    bool fromAutoPlay = false,
-  }) async {
-    final rawList = queue ?? [song];
-    final list = _deduplicate(rawList, song);
-
-    // ★ 点击新歌时，立即停掉当前播放
-    if (_engine.hasSource) {
-      await _engine.pause();
-    }
-
-    if (_engine.hasSource && _isSameQueue(list)) {
-      final idx = _queue.indexWhere((s) => s.globalId == song.globalId);
-      if (idx >= 0) {
-        print('🎯 [player] 点击当前队列内的歌，直接 seek 到第 $idx 首');
-        return await _seekAndPlay(idx, song);
-      }
-    }
-
-    if (_engine.hasSource &&
-        list.isNotEmpty &&
-        list.first.globalId == song.globalId) {
-      final currentIds = _queue.map((e) => e.globalId).toSet();
-      final overlap = list.where((e) => currentIds.contains(e.globalId)).length;
-      if (overlap >= _queue.length - 1) {
-        print('🔥 [player] 插队播放，走热插入逻辑');
-        final ok = await _hotInsertQueue(song);
-        if (ok) return true;
-        print('⚠️ [player] 热插入失败，回退到全量重建');
-      }
-    }
-
-    print('🔒 [player] 构建底层队列: ${song.title}');
-    return await _buildNewQueue(list, song, fromAutoPlay: fromAutoPlay);
-  }
-
   Future<bool> _buildNewQueue(
     List<Song> list,
     Song target, {
+    required int myToken,
     bool fromAutoPlay = false,
   }) async {
+    if (myToken != _playToken) return false;
     _switching = true;
     try {
       HapticFeedback.mediumImpact();
@@ -655,7 +716,6 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         current: target,
         expanded: true,
         isLoading: true,
-        isPlaying: false,
         position: Duration.zero,
         duration: target.duration,
         lyric: const [],
@@ -663,7 +723,8 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         queue: List.unmodifiable(list),
       );
 
-      final validSongs = await _resolveAll(list);
+      final validSongs = await _resolveAll(list, priority: target);
+      if (myToken != _playToken) return false;
 
       int initialIndex = -1;
       for (var i = 0; i < validSongs.length; i++) {
@@ -675,7 +736,8 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
 
       if (initialIndex < 0) {
         print('❌ [player] 当前歌曲解析失败');
-        state = state.copyWith(isLoading: false, isPlaying: false);
+        await _engine.reset();
+        state = state.copyWith(isLoading: false);
         if (!fromAutoPlay) _reportError(_failReason(target));
         return false;
       }
@@ -693,16 +755,18 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         );
       } catch (e) {
         print('❌ [player] setAudioSource 失败: $e');
-        state = state.copyWith(isLoading: false, isPlaying: false);
+        await _engine.reset();
+        state = state.copyWith(isLoading: false);
         if (!fromAutoPlay) _reportError(_failReason(target));
         return false;
       }
+
+      if (myToken != _playToken) return false;
 
       _applyModeToPlayer(state.mode);
 
       state = state.copyWith(
         isLoading: false,
-        isPlaying: true,
         queue: List.unmodifiable(validSongs),
       );
       HapticFeedback.lightImpact();
@@ -723,13 +787,15 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     final song = state.current;
     if (song == null) return;
 
+    final myToken = ++_playToken;
     _switching = true;
     try {
       print('🔄 [player] 恢复播放，断点: ${state.position}');
-      state = state.copyWith(isLoading: true, isPlaying: false);
+      state = state.copyWith(isLoading: true);
 
       final list = state.queue.isNotEmpty ? state.queue : [song];
-      final validSongs = await _resolveAll(list);
+      final validSongs = await _resolveAll(list, priority: song);
+      if (myToken != _playToken) return;
 
       int initialIndex = -1;
       for (var i = 0; i < validSongs.length; i++) {
@@ -740,7 +806,8 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
       }
 
       if (initialIndex < 0) {
-        state = state.copyWith(isLoading: false, isPlaying: false);
+        await _engine.reset();
+        state = state.copyWith(isLoading: false);
         _reportError(_failReason(song));
         return;
       }
@@ -765,16 +832,18 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
         );
       } catch (e) {
         print('❌ [player] resume setAudioSource 失败: $e');
-        state = state.copyWith(isLoading: false, isPlaying: false);
+        await _engine.reset();
+        state = state.copyWith(isLoading: false);
         _reportError(_failReason(song));
         return;
       }
+
+      if (myToken != _playToken) return;
 
       _applyModeToPlayer(state.mode);
 
       state = state.copyWith(
         isLoading: false,
-        isPlaying: true,
         queue: List.unmodifiable(validSongs),
       );
       _loadLyricAsync(song);
@@ -812,6 +881,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   }
 
   Future<void> playFromQueue(int idx) async {
+    if (_switching) return;
     if (idx < 0 || idx >= _queue.length) return;
     if (!_engine.hasSource) {
       await playSong(_queue[idx], queue: _queue);
@@ -819,7 +889,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     }
     try {
       await _engine.seekToIndex(idx);
-      if (!state.isPlaying) unawaited(_engine.play());
+      if (!_engine.isPlaying) unawaited(_engine.play());
     } catch (e) {
       print('⚠️ [player] playFromQueue 异常: $e');
     }
@@ -871,6 +941,7 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
   }
 
   Future<void> next() async {
+    if (_switching) return;
     if (_queue.isEmpty) return;
     if (!_engine.hasSource) {
       await _resumeFromRestore();
@@ -878,13 +949,14 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     }
     try {
       await _engine.next();
-      if (!state.isPlaying) unawaited(_engine.play());
+      if (!_engine.isPlaying) unawaited(_engine.play());
     } catch (e) {
       print('⚠️ [player] next 异常: $e');
     }
   }
 
   Future<void> previous() async {
+    if (_switching) return;
     if (_queue.isEmpty) return;
     if (!_engine.hasSource) {
       await _resumeFromRestore();
@@ -892,42 +964,35 @@ class PlayerNotifier extends Notifier<PlayerState> with WidgetsBindingObserver {
     }
     try {
       await _engine.previous();
-      if (!state.isPlaying) unawaited(_engine.play());
+      if (!_engine.isPlaying) unawaited(_engine.play());
     } catch (e) {
       print('⚠️ [player] previous 异常: $e');
     }
   }
 
   Future<void> togglePlay() async {
-    // 切换中，忽略
     if (_switching) {
       print('⚠️ [player] togglePlay 忽略：切换中');
       return;
     }
-
-    // ★ 先判断"没 source 但有歌"→ 走恢复（重启后点播放走这条）
     if (!_engine.hasSource && state.current != null) {
       await _resumeFromRestore();
       return;
     }
-
-    // 引擎加载中，忽略
     if (!_engine.isReady) {
-      print('⚠️ [player] togglePlay 忽略：引擎加载中');
+      print('⚠️ [player] togglePlay 忽略：引擎未就绪');
       return;
     }
-
     if (_engine.isPlaying) {
       await _engine.pause();
-      state = state.copyWith(isPlaying: false);
-      return;
+    } else {
+      unawaited(_engine.play());
     }
-
-    unawaited(_engine.play());
-    state = state.copyWith(isPlaying: true);
+    // ★ 不手动设 state.isPlaying，由 playingStream 推
   }
 
   Future<void> seek(Duration pos) async {
+    if (_switching) return;
     await _engine.seek(pos);
     _persist();
   }
