@@ -6,7 +6,6 @@ import 'package:path_provider/path_provider.dart';
 class AudioCache {
   static Directory? _cacheDir;
 
-  /// 索引 key 统一为「songId 转下划线、不含扩展名」的基础名
   static final Map<String, int> _completeIndex = {};
   static final Map<String, String> _pathIndex = {};
 
@@ -22,7 +21,6 @@ class AudioCache {
   // 工具
   // ═══════════════════════════════════════════
 
-  /// 索引 key：songId → 安全基础名（不含扩展名）
   static String _keyOf(String songId) {
     return songId
         .replaceAll(':', '_')
@@ -32,21 +30,18 @@ class AudioCache {
         .replaceAll('*', '_');
   }
 
-  /// 判断文件名是否带扩展名
   static bool _hasExt(String path) {
     final name = path.split(Platform.pathSeparator).last;
     final dot = name.lastIndexOf('.');
     return dot > 0 && dot < name.length - 1;
   }
 
-  /// 从完整路径提取索引 key（去扩展名）
   static String _keyFromPath(String path) {
     final name = path.split(Platform.pathSeparator).last;
     final dot = name.lastIndexOf('.');
     return dot > 0 ? name.substring(0, dot) : name;
   }
 
-  /// 根据 content-type / URL 推断扩展名（iOS 兼容优先 m4a）
   static String _extFrom(String? contentType, String url) {
     final ct = (contentType ?? '').toLowerCase();
     if (ct.contains('mpeg') || ct.contains('mp3')) return '.mp3';
@@ -65,7 +60,6 @@ class AudioCache {
     if (lower.contains('.wav')) return '.wav';
     if (lower.contains('.aac')) return '.aac';
 
-    // 默认 m4a：iOS 最兼容，Android 也认
     return '.m4a';
   }
 
@@ -75,7 +69,6 @@ class AudioCache {
 
   static Future<Directory> _dir() async {
     if (_cacheDir != null) return _cacheDir!;
-    // ★ 用 Documents，路径无空格（"Application Support" 有空格会触发 iOS 编码问题）
     final docs = await getApplicationDocumentsDirectory();
     final dir = Directory('${docs.path}/audio_cache');
     if (!dir.existsSync()) dir.createSync(recursive: true);
@@ -83,14 +76,13 @@ class AudioCache {
     return dir;
   }
 
-  /// 清理旧版 Application Support 缓存目录（升级后一次性迁移）
   static Future<void> _cleanupLegacyDir() async {
     try {
       final support = await getApplicationSupportDirectory();
       final legacy = Directory('${support.path}/audio_cache');
       if (legacy.existsSync()) {
         legacy.deleteSync(recursive: true);
-        print('🧹 [cache] 已清理旧版缓存目录（含无扩展名文件）');
+        print('🧹 [cache] 已清理旧版缓存目录');
       }
     } catch (_) {}
   }
@@ -100,7 +92,6 @@ class AudioCache {
   // ═══════════════════════════════════════════
 
   static Future<void> init() async {
-    // 先清理旧目录（一次性）
     await _cleanupLegacyDir();
 
     final dir = await _dir();
@@ -119,7 +110,6 @@ class AudioCache {
       allFiles.add(e);
     }
 
-    // 有扩展名的优先处理（同一 key 冲突时保留带扩展名的）
     allFiles.sort((a, b) {
       final aHas = _hasExt(a.path);
       final bHas = _hasExt(b.path);
@@ -147,8 +137,6 @@ class AudioCache {
         }
 
         final key = _keyFromPath(f.path);
-
-        // 同 key 已存在 → 当前文件冗余，删除
         if (_pathIndex.containsKey(key)) {
           try {
             f.deleteSync();
@@ -198,13 +186,9 @@ class AudioCache {
         final b2 = bytes[2];
         final b3 = bytes[3];
 
-        // fLaC
         if (b0 == 0x66 && b1 == 0x4C && b2 == 0x61 && b3 == 0x43) return true;
-        // OggS
         if (b0 == 0x4F && b1 == 0x67 && b2 == 0x67 && b3 == 0x53) return true;
-        // RIFF（wav）
         if (b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46) return true;
-        // m4a/mp4：bytes[4..7] == 'ftyp'
         if (bytes.length >= 8) {
           if (bytes[4] == 0x66 &&
               bytes[5] == 0x74 &&
@@ -213,9 +197,7 @@ class AudioCache {
             return true;
           }
         }
-        // ID3
         if (b0 == 0x49 && b1 == 0x44 && b2 == 0x33) return true;
-        // MP3 frame sync
         if (b0 == 0xFF && (b1 & 0xE0) == 0xE0) return true;
       }
       return true;
@@ -228,11 +210,9 @@ class AudioCache {
   // 查询
   // ═══════════════════════════════════════════
 
-  /// 取缓存文件路径；无缓存返回 null
   static Future<String?> get(String songId) async {
     final key = _keyOf(songId);
 
-    // 1. 内存索引命中
     final path = _pathIndex[key];
     if (path != null) {
       final f = File(path);
@@ -243,7 +223,6 @@ class AudioCache {
       _completeIndex.remove(key);
     }
 
-    // 2. 目录兜底扫描（兼容 init 未跑或索引丢失）
     final dir = await _dir();
     final candidates = <File>[];
     await for (final e in dir.list()) {
@@ -406,7 +385,6 @@ class AudioCache {
         return false;
       }
 
-      // ★ 决定扩展名
       final ext = _extFrom(response.headers['content-type'], url);
       final finalFile = File('${dir.path}/$key$ext');
 
@@ -445,10 +423,13 @@ class AudioCache {
         return false;
       }
 
-      // 删除同 key 的旧文件（比如上次用不同扩展名存的）
+      // ★ 修复：删除同 key 旧文件时，必须跳过 .part 和 finalFile 本身
       await for (final e in dir.list()) {
         if (e is! File) continue;
         if (e.path == finalFile.path) continue;
+        if (e.path == tmpFile.path) continue;
+        // ★ 跳过所有 .part 临时文件（包括其它 key 正在下载的）
+        if (e.path.endsWith('.part')) continue;
         final name = e.path.split(Platform.pathSeparator).last;
         if (name == key || name.startsWith('$key.')) {
           try {

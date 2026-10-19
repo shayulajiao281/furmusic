@@ -10,6 +10,7 @@ class AudioEngine {
   bool _hasSource = false;
   bool _isReady = false;
 
+  /// 串行化队列：所有改变 source / 状态的操作依次执行，防止并发冲突
   Future<void> _pending = Future.value();
 
   Future<T> _enqueue<T>(Future<T> Function() op) {
@@ -46,7 +47,7 @@ class AudioEngine {
     }
   }
 
-  /// ★ 迁移：使用 player.setAudioSources 替代 ConcatenatingAudioSource
+  /// 设置完整播放列表（不走 stop()，直接 setAudioSources 会中断上一次播放）
   Future<void> setPlaylist({
     required List<AudioSource> sources,
     required int initialIndex,
@@ -64,7 +65,7 @@ class AudioEngine {
               initialIndex: initialIndex.clamp(0, sources.length - 1),
               initialPosition: initialPosition,
             )
-            .timeout(const Duration(seconds: 30));
+            .timeout(const Duration(seconds: 12));
         _hasSource = true;
         _isReady = true;
       } catch (e) {
@@ -76,7 +77,7 @@ class AudioEngine {
     });
   }
 
-  /// 按索引 seek（不变）
+  /// 按索引 seek
   Future<void> seekToIndex(int index) {
     return _enqueue(() async {
       if (!_hasSource) return;
@@ -84,14 +85,14 @@ class AudioEngine {
       try {
         await _player
             .seek(Duration.zero, index: index)
-            .timeout(const Duration(seconds: 10));
+            .timeout(const Duration(seconds: 8));
       } catch (e) {
         print('⚠️ [engine] seekToIndex 失败: $e');
       }
     });
   }
 
-  /// ★ 迁移：使用 player.removeAudioSourceAt 替代 source.removeAt
+  /// 从当前队列移除指定索引
   Future<void> removeAt(int index) {
     return _enqueue(() async {
       if (!_hasSource) return;
@@ -104,7 +105,7 @@ class AudioEngine {
     });
   }
 
-  /// 重置引擎（不变）
+  /// 重置引擎，停止播放并清空底层队列
   Future<void> reset() {
     return _enqueue(() async {
       try {
@@ -117,7 +118,7 @@ class AudioEngine {
     });
   }
 
-  /// ★ 迁移：使用 player.insertAudioSource 替代 concat.insert
+  /// 热插播：插入到当前队列并播放
   Future<bool> insertAndPlay({
     required AudioSource source,
     required int index,
@@ -128,7 +129,7 @@ class AudioEngine {
         await _player.insertAudioSource(index, source);
         await _player
             .seek(Duration.zero, index: index)
-            .timeout(const Duration(seconds: 10));
+            .timeout(const Duration(seconds: 8));
         unawaited(play());
         return true;
       } catch (e) {
@@ -138,19 +139,25 @@ class AudioEngine {
     });
   }
 
-  /// play 前再次激活音频会话（不变）
+  /// ★ 修复点：play() 不 await，不超时
+  ///   _player.play() 的 Future 只在暂停/播完时 complete，播放中是长时间 pending
+  ///   用 unawaited 避免误报 "TimeoutException"
   Future<void> play() async {
     if (!_isReady) {
       print('⚠️ [engine] play() 被忽略：未就绪');
       return;
     }
+
+    // 会话激活：加 2 秒超时兜底，失败也继续尝试播
     try {
       final session = await AudioSession.instance;
-      await session.setActive(true);
-      await _player.play().timeout(const Duration(seconds: 5));
+      await session.setActive(true).timeout(const Duration(seconds: 2));
     } catch (e) {
-      print('⚠️ [engine] play() 超时或异常: $e');
+      print('⚠️ [engine] setActive 超时或异常（继续尝试播放）: $e');
     }
+
+    // ★ 不 await、不 timeout，play() 的 Future 本来就长时间 pending
+    unawaited(_player.play());
   }
 
   Future<void> pause() async {
@@ -163,7 +170,7 @@ class AudioEngine {
 
   Future<void> seek(Duration pos) async {
     try {
-      await _player.seek(pos).timeout(const Duration(seconds: 10));
+      await _player.seek(pos).timeout(const Duration(seconds: 8));
     } catch (e) {
       print('⚠️ [engine] seek 异常: $e');
     }
